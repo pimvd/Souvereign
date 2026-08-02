@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Draft v1.2 |
 | **Date** | 2 August 2026 |
-| **Owner** | Landing Zone (Platform) team |
+| **Owner** | Pim van Dijk |
 | **Scope** | Network, identity, delivery, and operations architecture for a multi-environment, multi-workload Scaleway estate |
 | **Changes in v1.1** | Architecture diagrams; capacity planning; availability assumptions; observability; security controls; Terraform module layout; validation; ADR appendix; formula-based cost model |
 | **Changes in v1.2** | **Fix: spoke CIDR derivation overlapped hub /20 (now `n + 4`, spokes from 10.e.16.0/22)**; hub internal PN layout (§6.3); corrected NVA capacity model (planning formula + validation invariant, 4 dimensions); validation split into pre-/post-apply with rollback classes and Phase 1 LB acceptance gate |
