@@ -12,6 +12,19 @@
 
 ---
 
+## Author and contact
+
+| | |
+|---|---|
+| **Name** | Pim van Dijk |
+| **Location** | Rotterdam Area, Netherlands |
+| **Available via** | [Team Rockstars IT](https://www.teamrockstars.nl/) |
+| **Email** | [pim@vandijkcloud.nl](mailto:pim@vandijkcloud.nl) · [pim.vandijk@teamrockstars.nl](mailto:pim.vandijk@teamrockstars.nl) |
+
+Questions about this design, or interested in a landing zone like this for your own estate? Feel free to reach out via either address above.
+
+---
+
 ## 1. Purpose and scope
 
 This document describes an enterprise-grade landing zone on Scaleway built around a hub-and-spoke network topology. It defines the environment model, the CIDR plan, the identity and segregation-of-duties model, the traffic flows, capacity and availability assumptions, and the delivery (IaC) model. It is designed to scale to **250 spokes (workloads) per environment** while keeping every network and identity decision under control of a central Landing Zone team.
