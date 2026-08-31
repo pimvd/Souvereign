@@ -20,6 +20,7 @@
 | **Location** | Rotterdam Area, Netherlands |
 | **Available via** | [Team Rockstars IT](https://www.teamrockstars.nl/) |
 | **Email** | [pim@vandijkcloud.nl](mailto:pim@vandijkcloud.nl) · [pim.vandijk@teamrockstars.nl](mailto:pim.vandijk@teamrockstars.nl) |
+| **Scaleway certifications** | [Certificate 1](https://scaleway.360learning.com/api/certification/8580743074158647/authed/html) · [Certificate 2](https://scaleway.360learning.com/api/certification/5697254866632394/authed/html) · [Certificate 3](https://scaleway.360learning.com/api/certification/7646468504112674/authed/html) |
 
 Questions about this design, or interested in a landing zone like this for your own estate? Feel free to reach out via either address above.
 
