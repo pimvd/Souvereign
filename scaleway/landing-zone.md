@@ -29,9 +29,9 @@ Questions about this design, or interested in a landing zone like this for your 
 
 | Certification | Issued | Reference | Certificate |
 |---|---|---|---|
-| Scaleway Foundations | 15 April 2026 | `7646468504112674` | [PDF](certifications/scaleway-foundations.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/7646468504112674/authed/html) |
-| Scaleway Associate: Network | 1 August 2026 | `8580743074158647` | [PDF](certifications/scaleway-associate-network.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/8580743074158647/authed/html) |
-| Scaleway Associate: Security & Identity | 1 August 2026 | `5697254866632394` | [PDF](certifications/scaleway-associate-security-identity.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/5697254866632394/authed/html) |
+| Scaleway Foundations | 15 April 2026 | `7646468504112674` | [PDF](../certifications/scaleway-foundations.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/7646468504112674/authed/html) |
+| Scaleway Associate: Network | 1 August 2026 | `8580743074158647` | [PDF](../certifications/scaleway-associate-network.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/8580743074158647/authed/html) |
+| Scaleway Associate: Security & Identity | 1 August 2026 | `5697254866632394` | [PDF](../certifications/scaleway-associate-security-identity.pdf) · [verify](https://scaleway.360learning.com/redirect/api/certification/5697254866632394/authed/html) |
 
 > **Note:** the **verify** links go to Scaleway's learning platform (360Learning) and require you to be **signed in** — they will redirect to a login page otherwise. The **PDF** copies in this repository open without an account. Authenticity of any certificate can also be confirmed with Scaleway directly at [contact.certifications@scaleway.com](mailto:contact.certifications@scaleway.com). Each certificate is valid for 24 months from its issue date.
 

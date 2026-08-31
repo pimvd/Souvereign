@@ -1,8 +1,22 @@
-# Souvereign Landing Zone — Implementation Plan
+# Scaleway Landing Zone — Implementation Plan
 
-A build guide for implementing the design in [`Scaleway-Landingzone.md`](./Scaleway-Landingzone.md) incrementally, in a way that suits AI-assisted ("vibe") coding: small, independently verifiable steps, each gated by a concrete Definition of Done. Section references (§) point at the design doc.
+A build guide for implementing the design in [`landing-zone.md`](./landing-zone.md) incrementally, in a way that suits AI-assisted ("vibe") coding: small, independently verifiable steps, each gated by a concrete Definition of Done. Section references (§) point at the design doc.
 
 > **Golden rule:** the design doc is the source of truth. This plan sequences *how* to build it; it never overrides *what* to build. If the two disagree, fix the code or raise a design PR — do not drift.
+
+---
+
+## Author and contact
+
+| | |
+|---|---|
+| **Name** | Pim van Dijk |
+| **Location** | Rotterdam Area, Netherlands |
+| **Available via** | [Team Rockstars IT](https://www.teamrockstars.nl/) |
+| **Email** | [pim@vandijkcloud.nl](mailto:pim@vandijkcloud.nl) · [pim.vandijk@teamrockstars.nl](mailto:pim.vandijk@teamrockstars.nl) |
+| **Scaleway certifications** | Scaleway Foundations · Associate Network · Associate Security & Identity — listed in [the design document](./landing-zone.md#scaleway-certifications) |
+
+Questions about this plan, or interested in a landing zone like this for your own estate? Feel free to reach out via either address above.
 
 ---
 
@@ -199,4 +213,4 @@ A build guide for implementing the design in [`Scaleway-Landingzone.md`](./Scale
 
 ---
 
-*Companion to `Scaleway-Landingzone.md` (Draft v0.5). Keep this plan's phase Definitions of Done aligned with the validation suite (§15); if a phase can't be proven by the suite, the suite is missing a check.*
+*Companion to `landing-zone.md` (Draft v0.5). Keep this plan's phase Definitions of Done aligned with the validation suite (§15); if a phase can't be proven by the suite, the suite is missing a check.*
