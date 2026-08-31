@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft v1.3 |
+| **Status** | Draft v0.4 |
 | **Date** | 3 August 2026 |
 | **Owner** | Pim van Dijk |
 | **Scope** | Network, identity, delivery, and operations architecture for a multi-environment, multi-workload Scaleway estate |
-| **Changes in v1.1** | Architecture diagrams; capacity planning; availability assumptions; observability; security controls; Terraform module layout; validation; ADR appendix; formula-based cost model |
-| **Changes in v1.2** | **Fix: spoke CIDR derivation overlapped hub /20 (now `n + 4`, spokes from 10.e.16.0/22)**; hub internal PN layout (§6.3); corrected NVA capacity model (planning formula + validation invariant, 4 dimensions); validation split into pre-/post-apply with rollback classes and Phase 1 LB acceptance gate |
-| **Changes in v1.3** | New **Exit strategy** chapter (§16): reversible-lock-in principle (ADR-010), exit register, data-export requirement for stateful services, off-provider rebuild rehearsal and a time-to-exit SLO. Provider-neutral; managed LB pool retained unchanged. Subsequent sections renumbered §17–§20 |
+| **Changes in v0.2** | Architecture diagrams; capacity planning; availability assumptions; observability; security controls; Terraform module layout; validation; ADR appendix; formula-based cost model |
+| **Changes in v0.3** | **Fix: spoke CIDR derivation overlapped hub /20 (now `n + 4`, spokes from 10.e.16.0/22)**; hub internal PN layout (§6.3); corrected NVA capacity model (planning formula + validation invariant, 4 dimensions); validation split into pre-/post-apply with rollback classes and Phase 1 LB acceptance gate |
+| **Changes in v0.4** | New **Exit strategy** chapter (§16): reversible-lock-in principle (ADR-010), exit register, data-export requirement for stateful services, off-provider rebuild rehearsal and a time-to-exit SLO. Provider-neutral; managed LB pool retained unchanged. Subsequent sections renumbered §17–§20 |
 
 ---
 
@@ -29,7 +29,7 @@ Questions about this design, or interested in a landing zone like this for your 
 
 This document describes an enterprise-grade landing zone on Scaleway built around a hub-and-spoke network topology. It defines the environment model, the CIDR plan, the identity and segregation-of-duties model, the traffic flows, capacity and availability assumptions, and the delivery (IaC) model. It is designed to scale to **250 spokes (workloads) per environment** while keeping every network and identity decision under control of a central Landing Zone team.
 
-Out of scope for v1.0/v1.1: cross-region connectivity, hybrid/on-premises connectivity, session-recording bastion, managed SIEM integration. Availability assumptions and the path toward region resilience are documented in §10.
+Out of scope for v0.1/v0.2: cross-region connectivity, hybrid/on-premises connectivity, session-recording bastion, managed SIEM integration. Availability assumptions and the path toward region resilience are documented in §10.
 
 ## 2. Architecture overview
 
