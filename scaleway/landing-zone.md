@@ -2,14 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.5 |
-| **Date** | 3 August 2026 |
+| **Status** | Draft v0.6 |
+| **Date** | 1 September 2026 |
 | **Owner** | Pim van Dijk |
 | **Scope** | Network, identity, delivery, and operations architecture for a multi-environment, multi-workload Scaleway estate |
 | **Changes in v0.2** | Architecture diagrams; capacity planning; availability assumptions; observability; security controls; Terraform module layout; validation; ADR appendix; formula-based cost model |
 | **Changes in v0.3** | **Fix: spoke CIDR derivation overlapped hub /20 (now `n + 4`, spokes from 10.e.16.0/22)**; hub internal PN layout (§6.3); corrected NVA capacity model (planning formula + validation invariant, 4 dimensions); validation split into pre-/post-apply with rollback classes and Phase 1 LB acceptance gate |
 | **Changes in v0.4** | New **Exit strategy** chapter (§16): reversible-lock-in principle (ADR-010), exit register, data-export requirement for stateful services, off-provider rebuild rehearsal and a time-to-exit SLO. Provider-neutral; managed LB pool retained unchanged. Subsequent sections renumbered §17–§20 |
 | **Changes in v0.5** | **Delivery model reshaped**: global layer renamed `platform`; **repo + Terraform state per workload** (spoke), networking now lives in the spoke repo under a platform-controlled identity, **two-sided peering as the duty boundary** (§6.6, §14, ADR-011/012). **Environments are instance-numbered stamps** `<class><NN>` and the **250 target is now a global spoke-instance budget**, not per-environment; small stamps → **one /16 per stamp** addressing (§6.1, §6.2, ADR-013). Capacity reworked to single-shard-per-stamp (§8). **Cost model rebuilt with a dated euro snapshot** and the inverted "fixed base × stamp count" driver (§18). Multi-domain DNS made explicit (§11). Single manual bootstrap seam (§14.4, ADR-014). Managed LB retained |
+| **Changes in v0.6** | **Addressing and estate model reshaped again**: the estate is now **four named stamps** (`prd01`, `acc01`, `tst01`, `dev01`) plus **three reserve blocks**, each stamp receiving **one /12** with the hub as the first **/21** and spokes as /22 from block 2 up (§6.1, §6.2, §6.3, ADR-015, supersedes ADR-013 addressing). Instance numbering is **retained** so a second instance is an allocation, not a redesign. **Scaleway quotas confirmed against published documentation** and the speculative "~50 spokes" threshold retired: there is **no per-VPC peering cap**; the binding limit is the **Organization-wide 255 Private Network quota**, which caps the estate at ~19 spokes/stamp across four stamps (§6.6, §8, §17, §20). The 250 global spoke-instance budget is replaced by that PN budget as the CI invariant (§14.2, §15). Cost projection rebased on 4 and 7 stamps (§18) |
 
 ---
 
@@ -39,7 +40,7 @@ Questions about this design, or interested in a landing zone like this for your 
 
 ## 1. Purpose and scope
 
-This document describes an enterprise-grade landing zone on Scaleway built around a hub-and-spoke network topology. It defines the environment model, the CIDR plan, the identity and segregation-of-duties model, the traffic flows, capacity and availability assumptions, and the delivery (IaC) model. It is designed to scale to **up to ~250 spoke *instances* across the whole estate** — on the order of ~20 workloads, each instantiated across many small, instance-numbered environment stamps — while keeping every network and identity decision under control of a central Platform (Landing Zone) team. Each individual stamp is small (≤~20 spokes in practice, ≤60 by addressing); the 250 is a **global budget**, not a per-environment one (§6.1, §6.2).
+This document describes an enterprise-grade landing zone on Scaleway built around a hub-and-spoke network topology. It defines the environment model, the CIDR plan, the identity and segregation-of-duties model, the traffic flows, capacity and availability assumptions, and the delivery (IaC) model. It is built around **four instance-numbered environment stamps** — `prd01`, `acc01`, `tst01`, `dev01` — with three reserve blocks held for second instances, while keeping every network and identity decision under control of a central Platform (Landing Zone) team. Each stamp holds on the order of ~19 spokes, a ceiling set by Scaleway's Organization-wide Private Network quota rather than by addressing: the /12 allocated to each stamp would accommodate 1,022 (§6.1, §6.2, §17).
 
 Out of scope for v0.1/v0.2: cross-region connectivity, hybrid/on-premises connectivity, session-recording bastion, managed SIEM integration. Availability assumptions and the path toward region resilience are documented in §10.
 
@@ -65,7 +66,7 @@ Out of scope for v0.1/v0.2: cross-region connectivity, hybrid/on-premises connec
               |                  ^     (1 shard/pool per small stamp;
               |                  |      pool scales out only on demand)
    +----------+------------------+----------------------------+
-   |            HUB VPC  10.S.0.0/20  (one numbered stamp)     |
+   |            HUB VPC  10.B.0.0/21  (one numbered stamp)     |
    |          (routes, ingress rules, private DNS)             |
    +---+--------------+--------------+---------------------+---+
        |peering       |peering       |peering              |peering
@@ -76,8 +77,10 @@ Out of scope for v0.1/v0.2: cross-region connectivity, hybrid/on-premises connec
 
    Spoke <-> Spoke traffic: none (no routes, denied by policy)
 
-   Estate = many small numbered stamps (prd01; stg01..stg08; dev01..dev05),
-   ≤250 spoke instances TOTAL across all of them (§6.1). Each stamp = one /16.
+   Estate = four named stamps (prd01, acc01, tst01, dev01) + 3 reserve blocks.
+   Each stamp = one /12; hub = first /21; spokes = /22 from block 2 up (§6.2).
+   Spokes/stamp bounded by the 255 Private-Network-per-Org quota, not by
+   addressing: ~19 per stamp across four stamps (§6.1, §17).
 ```
 
 ### 2.2 Organization and project hierarchy
@@ -88,13 +91,15 @@ Scaleway Organization
 +-- plt-connectivity-prd01      (Hub VPC, pools, DNS, hub-side peering)
 +-- plt-management-prd01        (Cockpit, audit, TF state, runners)
 +-- wl-amazingapp-prd01         (Spoke VPC + workload resources)
-+-- wl-<workload>-prd01         ... ≤ ~20 workloads per stamp
++-- wl-<workload>-prd01         ... ≤ ~19 workloads per stamp (§17)
 |
-+-- plt-*/wl-*-stg01 ... stg08  (8 staging stamps)
-+-- plt-*/wl-*-dev01 ... dev05  (5 dev stamps)
++-- plt-*/wl-*-acc01            (acceptance stamp)
++-- plt-*/wl-*-tst01            (test stamp)
++-- plt-*/wl-*-dev01            (dev stamp)
 |
-Numbered stamps: <class><NN>, two digits, 01–99 per class.
-≤250 spoke INSTANCES total across all stamps (§6.1).
+Numbered stamps: <class><NN>; classes prd / acc / tst / dev.
+Four stamps allocated; 3 reserve /12 blocks held for second
+instances (prd02, dev02, ...); 9 blocks unallocated (§6.2).
 
 IAM (Organization level)
 |
@@ -110,7 +115,7 @@ Repos: one `platform` repo + one `spoke-<name>` repo per workload (§14).
 ### 2.3 Spoke internal layout (/22)
 
 ```
-+------------ Spoke VPC (10.S.x.0/22 — one workload, one stamp) -----+
++------------ Spoke VPC (10.B.x.0/22 — one workload, one stamp) -----+
 |                                                                   |
 |  +--------------------+   +---------------+   +---------------+   |
 |  | pn-nodes   /23     |   | pn-app  /24   |   | pn-data /24   |   |
@@ -142,7 +147,7 @@ MGMT     operator -> PGW bastion (SSH allowlist) -> private IP
 
 1. **Segregation of duties.** The Landing Zone team owns everything network, identity, DNS, and platform configuration — including inside workload projects. Workload teams own only their application resources.
 2. **Everything as code.** All changes flow through GitHub pull requests. Humans have read-only console access; only pipeline identities can write.
-3. **Environment stamps.** An environment is a complete, independent copy of the architecture, addressed as a **numbered instance** (`prd01`, `stg03`, `dev01`; two digits, up to 99 per class). No resource, network, or peering is shared between stamps. The estate runs many small stamps; the 250 target is a *global* spoke-instance budget across them (§6.1).
+3. **Environment stamps.** An environment is a complete, independent copy of the architecture, addressed as a **numbered instance** (`prd01`, `acc01`, `tst01`, `dev01`). No resource, network, or peering is shared between stamps. The estate allocates four stamps today and holds three reserve blocks for second instances; numbering is kept so growth is an allocation rather than a redesign (§6.1, §6.2).
 4. **Strictly spoke↔hub.** Spokes never communicate with each other. All ingress and egress traverses the hub for inspection.
 5. **Deterministic addressing.** Every CIDR is derived by formula from a per-stamp base and a workload index. No IP address is ever hand-picked.
 6. **Horizontal scalability of shared services.** Hub resources that could bottleneck (firewall NVAs, load balancers, public gateways) are deployed as **pools** with deterministic shard assignment, so scaling out is a configuration change rather than a redesign.
@@ -161,7 +166,7 @@ One Scaleway Organization contains all environments. Projects are the isolation 
 | `plt-management-<env>` | Platform operations | Cockpit/observability, audit log sinks, Terraform state (Object Storage), optional GitHub runner pool |
 | `wl-<workload>-<env>` | One workload, one stamp | Spoke VPC + workload resources (Kapsule, Instances, Managed Databases, storage) — both built from the workload's own `spoke-<name>` repo, network under a platform-controlled identity (§14) |
 
-Here `<env>` is a **numbered stamp**: `<class><NN>`, two-digit zero-padded, `01`–`99` per class (`prd01`, `stg03`, `dev01`); classes are `prd`/`stg`/`dev` (extensible). So projects read `plt-connectivity-stg03`, `wl-amazingapp-prd01`. Workload names are short kebab-case identifiers registered in the workload registry (§14.2). Each workload additionally has its own Git repository (§14.1); the platform pipeline holds **GitHub organisation-admin** rights to create and govern those repositories as code (the "repo-factory").
+Here `<env>` is a **numbered stamp**: `<class><NN>`, two-digit zero-padded; classes are `prd`/`acc`/`tst`/`dev` (extensible). Four stamps are allocated — `prd01`, `acc01`, `tst01`, `dev01` — so projects read `plt-connectivity-acc01`, `wl-amazingapp-prd01`. Numbering is retained although only one instance per class exists today: a second instance (`dev02`) is an allocation from a reserve block (§6.2), not a rename of everything. Workload names are short kebab-case identifiers registered in the workload registry (§14.2). Each workload additionally has its own Git repository (§14.1); the platform pipeline holds **GitHub organisation-admin** rights to create and govern those repositories as code (the "repo-factory").
 
 ## 5. Identity and access model
 
@@ -205,34 +210,75 @@ The platform pipeline is the most privileged identity in the estate; its protect
 
 ### 6.1 Environment stamps
 
-Each environment is a **numbered stamp** (`<class><NN>`) consisting of one hub VPC and a small number of spoke VPCs (≤~20 in practice, ≤60 by addressing), joined by VPC peering in a star topology. The estate runs **many small stamps** — currently ~5 dev (`dev01`–`dev05`), 8 staging (`stg01`–`stg08`), and one or more prod — with a **global budget of ≤250 spoke instances** across all of them (a spoke *instance* = one workload deployed into one stamp). So ~20 workloads × their targeted stamps ≈ 250 instances; no single stamp holds 250. Traffic patterns are strictly spoke↔hub; because both egress (spoke → hub NVA → PGW) and ingress (hub LB → spoke) are single peering hops, transitive peering is not functionally required. It is nevertheless enabled on hub VPCs at creation time as insurance, because the setting is immutable after creation (ADR-008).
+Each environment is a **numbered stamp** (`<class><NN>`) consisting of one hub VPC and a small number of spoke VPCs, joined by VPC peering in a star topology. The estate allocates **four stamps** — `prd01`, `acc01`, `tst01`, `dev01` — and holds **three reserve /12 blocks** for second instances (`prd02`, `dev02`, …), with nine further blocks unallocated (§6.2). Instance numbering is retained even though one instance per class exists today, so growth is an allocation rather than a redesign.
+
+**Stamp size is bounded by quota, not by addressing.** Each hub consumes 4 Private Networks (§6.3) and each spoke 3 (§6.4), against an Organization-wide Scaleway quota of **255 Private Networks**:
+
+```
+Σ over stamps ( 4 + 3 × spokes_in_stamp )  ≤  255
+```
+
+That yields **≈19 spokes per stamp** with four stamps allocated, or ≈10 if all seven blocks are ever built out (§17). Addressing allows 1,022 per stamp (§6.2), so the ceiling is a quota the registry must assert (§15), not a limit the formula reaches on its own. The registry therefore also carries an explicit per-stamp soft cap (default 60) so a mistake fails CI rather than silently minting spokes.
+
+Traffic patterns are strictly spoke↔hub; because both egress (spoke → hub NVA → PGW) and ingress (hub LB → spoke) are single peering hops, transitive peering is not functionally required — Scaleway limits transitivity to four chained VPCs in any case. It is nevertheless enabled on hub VPCs at creation time as insurance, because the setting is immutable after creation (ADR-008).
 
 ### 6.2 CIDR plan
 
-Requirements: /22 per spoke, /20 per hub, **small stamps** (≤~60 spokes), non-overlapping and human-legible addressing, deterministic derivation. Because each numbered stamp is small (§6.1), each receives **one /16** — the second octet *is* the stamp id (`10.S.0.0/16`), which makes every log line, route, and NACL rule self-identifying (ADR-013, supersedes the old /14-per-environment scheme).
+Requirements: /22 per spoke, a hub large enough for the §6.3 Private Networks, non-overlapping and human-legible addressing, deterministic derivation, and room for four stamps plus reserve. Each stamp receives **one /12** — the high nibble of the second octet *is* the stamp id — which keeps every log line, route, and NACL rule self-identifying (ADR-015, supersedes the /16-per-stamp scheme of ADR-013).
 
-| Class | Second-octet range (stamp id `S`) | Stamps | Example |
+`10.0.0.0/8` divides into exactly **16 /12 blocks**, so:
+
+```
+S = octet2 >> 4          # stamp id, 0..15
+B = S * 16               # base second octet
+stamp_cidr = "10.${B}.0.0/12"
+```
+
+| S | Stamp | Block | Range |
 |---|---|---|---|
-| prd | `10.0` – `10.31` | up to 32 | `prd01 = 10.0.0.0/16` |
-| stg | `10.32` – `10.63` | up to 32 | `stg01 = 10.32.0.0/16` |
-| dev | `10.64` – `10.127` | up to 64 | `dev01 = 10.64.0.0/16` |
-| reserved | `10.128` – `10.255` | 128 | growth / second region / larger allocations |
+| 0 | `prd01` | `10.0.0.0/12` | `10.0.0.0` – `10.15.255.255` |
+| 1 | *reserve-1* | `10.16.0.0/12` | `10.16.0.0` – `10.31.255.255` |
+| 2 | *reserve-2* | `10.32.0.0/12` | `10.32.0.0` – `10.47.255.255` |
+| 3 | *reserve-3* | `10.48.0.0/12` | `10.48.0.0` – `10.63.255.255` |
+| 4 | `dev01` | `10.64.0.0/12` | `10.64.0.0` – `10.79.255.255` |
+| 5 | `tst01` | `10.80.0.0/12` | `10.80.0.0` – `10.95.255.255` |
+| 6 | `acc01` | `10.96.0.0/12` | `10.96.0.0` – `10.111.255.255` |
+| 7–15 | *unallocated* | `10.112.0.0` – `10.255.255.255` | 9 further blocks |
 
-Stamp id is derived, not chosen: `S = class_base + (NN − 1)` (`prd01 → 10.0`, `stg01 → 10.32`, `dev01 → 10.64`). Within a stamp the hub takes the first /20 (`10.S.0.0/20`); workload *w* (0-based registry index) receives `cidrsubnet("10.S.0.0/16", 6, w + 4)` — workload 0 = `10.S.16.0/22`, up to workload 59 = /22-block 63. CI invariants assert no generated spoke CIDR overlaps its hub /20 **and** no two stamps' /16s overlap (§15).
+Reading a stamp off any address is one shift: `10.83.4.17` → `83 >> 4 = 5` → `tst01`. Reserve blocks are the landing spots for second instances; they sit adjacent to `prd01` so a `prd02` stays in the low range.
 
-Because stamps are fully independent (ADR-004, principle #3), non-overlap is a convenience (clean logging, future optionality), not a hard requirement. The /16-per-stamp scheme caps the estate at 256 stamps; the two-digit format allows up to 99 per class (297 total), so to exceed 256 either narrow to a /17 per stamp (512 fit) or let **non-prod** stamps overlap (safe, since nothing routes between stamps). Prod always keeps unique, non-overlapping /16s. Kapsule pod/service CIDRs remain pinned in `100.64.0.0/10` (§9), disjoint from the `10.0.0.0/8` plan.
+**Stamp id is assigned once, everything below it is derived.** Unlike ADR-013 — where `S` fell out of `class_base + (NN − 1)` — the id is now an explicit, reviewed registry entry chosen from the 16-block table. With only 16 blocks and 7 in use, an allocation table is clearer than a formula, and it lets `prd02` take a low block instead of whatever arithmetic dictates. Below the stamp, derivation is unchanged in spirit: **no address is ever hand-picked** (principle #5).
+
+Within a stamp the hub takes the **first /21** (`10.B.0.0/21`, §6.3) — that is /22-blocks 0 and 1 — and workload *w* (0-based registry index) receives:
+
+```hcl
+spoke_cidr = cidrsubnet("10.${B}.0.0/12", 10, w + 2)
+```
+
+| w | `dev01` (B=64) | `tst01` (B=80) | `acc01` (B=96) | `prd01` (B=0) |
+|---|---|---|---|---|
+| 0 | `10.64.8.0/22` | `10.80.8.0/22` | `10.96.8.0/22` | `10.0.8.0/22` |
+| 1 | `10.64.12.0/22` | `10.80.12.0/22` | `10.96.12.0/22` | `10.0.12.0/22` |
+| 18 | `10.64.80.0/22` | `10.80.80.0/22` | `10.96.80.0/22` | `10.0.80.0/22` |
+| 1021 (max) | `10.79.252.0/22` | `10.95.252.0/22` | `10.111.252.0/22` | `10.15.252.0/22` |
+
+A /12 holds 1,024 /22 blocks; the hub takes 2, leaving **1,022 addressable spokes per stamp** — roughly 50× what the Private Network quota permits (§6.1). Addressing has deliberately stopped being the constraint, so CI must assert the quota budget instead (§15).
+
+CI invariants assert no generated spoke CIDR overlaps its hub /21, no two stamps' /12s overlap, and that every stamp id is unique and drawn from the table above (§15). Because stamps are fully independent (ADR-004, principle #3), non-overlap is a convenience (clean logging, future optionality), not a hard requirement — but with 16 blocks against 7 in use there is no reason to overlap. Kapsule pod/service CIDRs remain pinned in `100.64.0.0/10` (§9), disjoint from the `10.0.0.0/8` plan.
 
 ### 6.3 Hub internal layout
 
-The hub /20 is itself carved into Private Networks so that next-hop placement, NVA↔PGW wiring, and runner placement are explicit rather than implied:
+The hub takes the **first /21** of the stamp's /12 (`10.B.0.0/21`), carved into Private Networks so that next-hop placement, NVA↔PGW wiring, and runner placement are explicit rather than implied:
 
-| Hub Private Network | CIDR (offset within /20) | Purpose |
-|---|---|---|
-| `pn-hub-transit` | first /23 | NVA shard interfaces receiving spoke traffic; target of hub ingress rules (next-hop IPs live here) |
-| `pn-hub-egress` | next /24 | NVA ↔ PGW leg; PGWs attach here and NAT the NVA-forwarded traffic |
-| `pn-hub-ingress` | next /24 | Hub LB shards; backends reach spokes via peering |
-| `pn-hub-management` | next /24 | Validation runners (§15), monitoring collectors, bastion-adjacent tooling |
-| reserved | remaining /23 | Pool growth, future HA legs |
+| Hub Private Network | CIDR within the /21 | `dev01` example (B=64) | Purpose |
+|---|---|---|---|
+| `pn-hub-transit` | `10.B.0.0/23` | `10.64.0.0/23` | NVA shard interfaces receiving spoke traffic; target of hub ingress rules (next-hop IPs live here) |
+| `pn-hub-egress` | `10.B.2.0/24` | `10.64.2.0/24` | NVA ↔ PGW leg; PGWs attach here and NAT the NVA-forwarded traffic |
+| `pn-hub-ingress` | `10.B.3.0/24` | `10.64.3.0/24` | Hub LB shards; backends reach spokes via peering |
+| `pn-hub-management` | `10.B.4.0/24` | `10.64.4.0/24` | Validation runners (§15), monitoring collectors, bastion-adjacent tooling |
+| reserved | `10.B.5.0/24` + `10.B.6.0/23` | — | Pool growth, future HA legs |
+
+Four Private Networks are created per hub, using 1,280 of the /21's 2,048 addresses and leaving 768 in reserve. The four count against the Organization-wide 255 Private Network quota (§6.1, §17); the reserved ranges cost nothing until a PN is actually created in them.
 
 This answers the packet-path questions explicitly: a spoke's outbound packet arrives via its peering, the hub ingress rule delivers it to the assigned NVA's IP on `pn-hub-transit`, the NVA inspects and forwards out its `pn-hub-egress` interface, and the assigned PGW (attached to `pn-hub-egress`, advertising the default route on that PN only) NATs it — the PGW therefore sees the NVA's egress-leg IP as source. Return traffic reverses the same path. Because the default route toward a PGW exists only on `pn-hub-egress`, spoke traffic cannot bypass the NVA. Hub NACL rules enforce this as defense in depth (spoke ranges may only reach `pn-hub-transit` and published LB/management endpoints).
 
@@ -256,10 +302,10 @@ Each Private Network receives an immutable, auto-assigned IPv6 /64. The estate's
 
 Each spoke peers with its stamp's hub via a **pair of connectors — one in each VPC** (Scaleway peering requires a connector on both sides, and only reaches `Peered` status once both exist). This two-sidedness *is* the duty boundary (ADR-012):
 
-- the **spoke repo** (network path, identity `app-spoke-<name>-network-<env>`, scoped to the spoke project only) creates the **spoke-side** connector, the spoke default route `0.0.0.0/0` toward it, and the route to the hub /20;
+- the **spoke repo** (network path, identity `app-spoke-<name>-network-<env>`, scoped to the spoke project only) creates the **spoke-side** connector, the spoke default route `0.0.0.0/0` toward it, and the route to the hub /21;
 - the **platform hub layer** (`app-platform-pipeline`) creates the **hub-side** connector, one hub route to the spoke /22, and one ingress rule directing inbound-from-spoke traffic to the assigned NVA shard (§7) — all generated by `for_each` over the registered spokes targeting that stamp.
 
-Neither identity holds rights in the other's VPC, so no principal needs cross-VPC permissions and a spoke cannot self-connect to the hub. Onboarding is therefore a coordinated two-step that "meets in the middle": a registry PR provisions the hub side, the spoke repo provisions its side, and peering comes up when both halves land. Routine spoke changes never touch the hub state; only onboarding/offboarding/shard-reassignment do (a `for_each` addition, safe). A hub carries ≤~60 routes/ingress-rules/connectors per stamp — well within any plausible quota, so the old "250+ routes / 500 connectors per env" concern is relieved by small stamps; still confirm limits before growing a *single* stamp past ~50 spokes (§17).
+Neither identity holds rights in the other's VPC, so no principal needs cross-VPC permissions and a spoke cannot self-connect to the hub. Onboarding is therefore a coordinated two-step that "meets in the middle": a registry PR provisions the hub side, the spoke repo provisions its side, and peering comes up when both halves land. Routine spoke changes never touch the hub state; only onboarding/offboarding/shard-reassignment do (a `for_each` addition, safe). **Published quotas confirm this scales.** Scaleway states no per-VPC peering cap at all; the limit is **512 peering connectors per Organization** (raisable on request). A stamp at 19 spokes uses 38 connectors, so four stamps use ~152 of 512. Hub-side filtering is bounded by the **255 IPv4 + 255 IPv6 Network ACL rules per VPC** quota — comfortable at ~19 spokes, but the dimension to watch if a stamp is ever grown, since NACL rules are stateless and declared in both directions. Scaleway publishes no per-VPC route quota; routes scale 1:1 with spokes and have not been observed to bind. The speculative "confirm before ~50 spokes" threshold of earlier drafts is retired — see §17 for the constraint that actually binds (Private Networks per Organization).
 
 ## 7. Shared resource pools
 
@@ -287,7 +333,7 @@ default: nva_shard = "nva-${floor(spoke_index / spokes_per_nva)}"
 
 Adding capacity is a two-line change (add a shard, adjust assignments); the pipeline regenerates ingress rules, routes, and LB frontends. Moving a spoke between shards is a single-field change with per-spoke blast radius.
 
-Because a stamp is small (≤~20 spokes, §6.1), the **default is a single shard per pool per stamp**; the pool machinery exists so a hot or growing stamp scales by configuration, but in practice it rarely engages within one stamp. The 250-instance estate total is spread across many single-shard hubs, not concentrated in one large pool (ADR-005).
+Because a stamp is small (≤~19 spokes, §6.1), the **default is a single shard per pool per stamp**; the pool machinery exists so a hot stamp scales by configuration, but in practice it rarely engages within one stamp. The estate is spread across four single-shard hubs, not concentrated in one large pool (ADR-005).
 
 ### 7.2 NVA pool (egress and inspection)
 
@@ -322,13 +368,13 @@ spokes_per_nva = floor( shard_inspected_capacity_mbps × headroom_factor
 sum(egress_budget_mbps of assigned spokes) <= shard_inspected_capacity_mbps × 0.70
 ```
 
-and equivalents for the session/CPS/PPS dimensions. With a shard validated at 2,000 Mbps inspected and 70% usable: `floor(2000 × 0.70 / 50) = 28` spokes at the default budget. Because each stamp hosts only ≤~20 spokes (§6.1), **a single NVA shard covers a whole stamp** at the default budget; the pool scales out only for an unusually hot stamp, and measured utilization drives that decision (§12). The 250-instance estate total is distributed across many single-shard hubs, so the old "one big pool of 5–10 shards" picture does not apply — instead the fixed hub base is multiplied across stamps, which is the dominant cost (§18).
+and equivalents for the session/CPS/PPS dimensions. With a shard validated at 2,000 Mbps inspected and 70% usable: `floor(2000 × 0.70 / 50) = 28` spokes at the default budget. Because each stamp hosts only ≤~19 spokes (§6.1), **a single NVA shard covers a whole stamp** at the default budget; the pool scales out only for an unusually hot stamp, and measured utilization drives that decision (§12). The estate is distributed across four single-shard hubs, so the "one big pool of 5–10 shards" picture does not apply — instead the fixed hub base is multiplied across stamps, which is the dominant cost (§18).
 
 **LB shard.** Bounded by frontends/certificates per LB and connections/throughput per LB type. A single LB shard covers a small stamp; default `spokes_per_lb = 50` *(validate against LB type limits)*. Multi-domain workloads (§11) consume extra per-frontend certificates, which counts against the LB cert limit — so effective `spokes_per_lb` drops for cert-heavy stamps.
 
 **PGW shard.** Bounded by NAT throughput and session table. One PGW per stamp is the default; scale to one PGW per 2–3 NVA shards only where a stamp is scaled out *(validate)*.
 
-**Hub control plane.** Per stamp the hub carries only ≤~60 routes/ingress-rules/connectors — comfortably within plausible quotas. Confirm limits with Scaleway only before growing a *single* stamp past ~50 spokes; the org-wide count of stamps/VPCs and public IPs is the newer quota dimension to watch (§17).
+**Hub control plane.** Per stamp the hub carries one route, one ingress rule, and one connector per spoke — ~19 of each at the quota-bounded stamp size (§6.1). Against published Scaleway quotas (512 peering connectors per Organization, 255 NACL rules per VPC per address family, no per-VPC peering or route cap) this is not close to binding. The constraint that *does* bind the estate is the **255 Private Network per Organization** quota (§6.1, §17); VPCs (256/Org) and public IPs are the next dimensions to watch.
 
 Capacity assumptions, measured values, and current shard assignments are published on the platform dashboard (§12) so rebalancing decisions are data-driven.
 
@@ -361,7 +407,7 @@ Recovery model: the entire estate is recreatable from Git (infrastructure) plus 
 
 Future path to region resilience (not committed): second-region stamps on the reserved ranges (§6.2), DNS-based failover for ingress, per-workload data replication. Cross-region peering does not exist on Scaleway; stamps would be fully independent, which the environment-stamp model already supports.
 
-**Cost-driven variant — shared non-prod hub.** Because every stamp carries a full always-on hub base (§18), and the estate runs many small non-prod stamps, non-prod numbered stamps *may* share one hub — several `dev*`/`stg*` spokes peering into a single shared hub — to collapse N hub bases into one, trading inter-stamp isolation for cost. **Prod stamps are never shared.** Ephemeral dev stamps additionally support a TTL/auto-suspend profile. This is the single biggest cost lever (§18) and is a supported deployment shape, selected by a per-stamp flag rather than a redesign.
+**Cost-driven variant — shared non-prod hub.** Because every stamp carries a full always-on hub base (§18), non-prod stamps *may* share one hub — `dev*`, `tst*` and `acc*` spokes peering into a single shared hub — to collapse three hub bases into one, trading inter-stamp isolation for cost. It also reclaims Private Network headroom (8 PNs saved, §6.1). **Prod stamps are never shared.** Ephemeral dev stamps additionally support a TTL/auto-suspend profile. This is the single biggest cost lever (§18) and is a supported deployment shape, selected by a per-stamp flag rather than a redesign.
 
 ## 11. DNS and domains
 
@@ -420,8 +466,8 @@ platform/
 │   └── iam/                    # groups, applications, policies, key rotation
 ├── stamps/                     # one root module (state) per numbered stamp
 │   ├── prd01/                  # backend.tf, prd01.tfvars (pools, budgets, shared-hub flag)
-│   ├── stg01/ … stg08/
-│   └── dev01/ … dev05/
+│   ├── acc01/ tst01/
+│   └── dev01/                  # reserve blocks -> prd02/, dev02/, ... when allocated (§6.2)
 ├── registry/
 │   └── workloads.hcl           # single source of truth (§14.2)
 ├── repo-factory/               # GitHub-provider config: mints & governs spoke repos
@@ -436,7 +482,7 @@ spoke-<name>/                   # minted from a template by the repo-factory
 └── .github/                    # per-stamp environments + secrets (injected by repo-factory)
 ```
 
-Because each spoke is its own repo with a single small root per stamp, there is **no "250 roots in one repo" problem and no Terragrunt is required**; the DRY mechanism is the versioned module library that every spoke pins. Module upgrades roll out per-spoke (bump the pinned tag), so blast radius stays per-workload.
+Because each spoke is its own repo with a single small root per stamp, there is **no "many roots in one repo" problem and no Terragrunt is required**; the DRY mechanism is the versioned module library that every spoke pins. Module upgrades roll out per-spoke (bump the pinned tag), so blast radius stays per-workload.
 
 ### 14.2 Workload registry
 
@@ -448,7 +494,7 @@ dns_zones = ["example.com", "example.nl"]   # platform-owned public apexes (§11
 workloads = {
   "amazingapp" = {
     index            = 0        # 0-based; drives per-stamp CIDR (§6.2)
-    stamps           = ["prd01", "stg01", "dev01", "dev02"]   # numbered instances
+    stamps           = ["prd01", "acc01", "tst01", "dev01"]   # numbered instances
     nva_shard        = null     # null = deterministic default (§7.1)
     lb_shard         = null
     egress_budget    = 50       # Mbps, feeds capacity model (§8)
@@ -458,11 +504,11 @@ workloads = {
     ]
     egress_allowlist = ["api.anthropic.com"]
   }
-  # … on the order of ~20 workloads; Σ (per-workload stamp counts) ≤ 250 instances
+  # … Σ over stamps (4 + 3 × spokes) ≤ 255 Private Networks per Org (§6.1)
 }
 ```
 
-The registry stays central because the **cross-stamp invariants** — unique `index`, no CIDR overlap, shard-capacity sums, ≤250 total instances — can only be checked where every workload is visible (§15). A workload's own repo carries only the *workload-owned* fields (app config, requested hosts, egress allowlist) that flow into the registry by PR.
+The registry stays central because the **cross-stamp invariants** — unique `index`, no CIDR overlap, shard-capacity sums, and the Organization-wide Private Network budget (§6.1) — can only be checked where every workload is visible (§15). A workload's own repo carries only the *workload-owned* fields (app config, requested hosts, egress allowlist) that flow into the registry by PR.
 
 Onboarding a workload is a coordinated two-step: **(1)** a registry PR in `platform` — the pipeline provisions the hub-side wiring for each targeted stamp and mints the `spoke-<name>` repo (project, IAM applications + keys, branch protection, `CODEOWNERS`, environments) via the repo-factory; **(2)** the new spoke repo's own `network` then `app` applies build the spoke side and the workload. Validation (§15) runs after each.
 
@@ -482,7 +528,7 @@ Spoke repos never read platform state directly (SoD). The platform hub layer **p
 
 Validation is split into **pre-apply gates** (which genuinely block a change) and **post-apply verification** (a change that already landed cannot be "blocked" — it triggers a defined response).
 
-**Pre-apply (blocking, in CI on every PR):** Terraform validate/plan review; policy-as-code suite (§13); generated-route invariants — exactly one hub route per registered spoke, no route to unregistered CIDRs, **no spoke CIDR overlapping the hub /20**, **no two stamps' /16s overlapping** (§6.2); IAM permission diff against the §5.1 matrix; registry consistency (unique indices, every workload's `stamps` reference a defined stamp, **Σ spoke instances ≤ 250**, budgets within shard validation invariants §8). These cross-stamp checks run in `platform`, where every workload is visible (§14.2); the conformance suite below then runs per stamp and per new spoke.
+**Pre-apply (blocking, in CI on every PR):** Terraform validate/plan review; policy-as-code suite (§13); generated-route invariants — exactly one hub route per registered spoke, no route to unregistered CIDRs, **no spoke CIDR overlapping the hub /21**, **no two stamps' /12s overlapping** (§6.2); IAM permission diff against the §5.1 matrix; registry consistency (unique indices, unique stamp ids drawn from the §6.2 table, every workload's `stamps` reference a defined stamp, the **Private Network budget `Σ over stamps (4 + 3 × spokes) ≤ 255`** and the per-stamp soft cap, budgets within shard validation invariants §8). These cross-stamp checks run in `platform`, where every workload is visible (§14.2); the conformance suite below then runs per stamp and per new spoke.
 
 **Post-apply (verification, from runners in `pn-hub-management` plus a canary per new spoke):**
 
@@ -501,7 +547,7 @@ Validation is split into **pre-apply gates** (which genuinely block a change) an
 | `manual-recovery-required` | Routes, ingress rules, NACLs | Incident + promotion block; guided runbook, no auto-revert |
 | `forward-fix-only` | IAM policies, project/VPC creation | Incident + promotion block; fix rolls forward |
 
-Promotion (stg → prd) requires a green post-apply suite in staging. The same suite runs nightly as continuous verification, and the quarterly dev stamp-rebuild (§10) uses it as its acceptance gate.
+Promotion (`tst01` → `acc01` → `prd01`) requires a green post-apply suite in the preceding stamp. The same suite runs nightly as continuous verification, and the quarterly dev stamp-rebuild (§10) uses it as its acceptance gate.
 
 **Phase 1 architecture acceptance gate (risk #3):** no production stamp is approved until a hub LB has health-checked backends in at least two different spoke VPCs, served TLS to both, survived backend and route changes, demonstrated the expected source IP at the backend, and demonstrated symmetric return-path routing.
 
@@ -596,8 +642,8 @@ Because exit capability degrades silently, adoption of new dependencies is gated
 
 | # | Item | Impact | Status / mitigation |
 |---|---|---|---|
-| 1 | Connectors / routes / ingress-rules per hub VPC | **Relieved** by small stamps (≤~60 per hub, not 500/250) | Confirm only before growing a *single* stamp past ~50 spokes |
-| 2 | Org-wide quota: number of stamps/VPCs, projects, and public IPs at up to ~99 stamps/class | Blocks scale-out | New dimension to confirm with Scaleway before wave 2 |
+| 1 | Connectors / routes / ingress-rules per hub VPC | **Closed** — Scaleway publishes **no per-VPC peering cap**; the cap is **512 connectors per Organization** (raisable). ~152 used at four stamps × 19 spokes | Confirmed against Scaleway VPC Peering FAQ and quotas docs (Sept 2026). The earlier "~50 spokes" threshold was self-imposed, not a Scaleway limit, and is retired |
+| 2 | **Private Networks per Organization = 255** (hub 4 + spoke 3 each) | **Binding constraint on the whole estate** — caps ~19 spokes/stamp at four stamps, ~10 at seven | CI invariant `Σ (4 + 3 × spokes) ≤ 255` (§15); request a quota increase from Scaleway Support before exceeding it; collapsing `pn-data` into `pn-app` would buy ~33% headroom at the cost of §6.4 tiering |
 | 3 | LB backend health checks across peering unproven at scale | Ingress design risk | Phase 1 PoC gate |
 | 4 | NACL in Public Beta, API-only | Feature risk | Acceptable (IaC-only estate); track GA |
 | 5 | No explicit deny in IAM | Segregation by omission | Automated IAM audit (§13) |
@@ -607,7 +653,10 @@ Because exit capability degrades silently, adoption of new dependencies is gated
 | 9 | Region loss = environment loss | Availability | Accepted (§10); quarterly rebuild exercise; region resilience on roadmap |
 | 10 | VPC peering connector €/hour rate **not publicly documented** | Unknown standing cost, possibly ≈ hub bases | **Top pricing question** — confirm €/connector before scale-out (§18, open items) |
 | 11 | Exit capability asserted but unproven until first off-provider rebuild | Strategic / lock-in | §16: exit register + annual off-provider rebuild, validation suite as acceptance gate |
-| 12 | Fixed hub base × stamp count is the dominant cost, multiplied across many small stamps | Standing cost | Shared non-prod hub + TTL/auto-suspend; smaller non-prod instance types (§10, §18) |
+| 12 | Fixed hub base × stamp count is the dominant cost, multiplied across stamps | Standing cost | Shared non-prod hub + TTL/auto-suspend; smaller non-prod instance types (§10, §18) |
+| 13 | Network ACL rules capped at **255 IPv4 + 255 IPv6 per VPC**; NACLs are stateless so every flow is declared twice | Hub filtering ceiling | Comfortable at ~19 spokes; re-check before any stamp grows, and prefer summarised spoke ranges over per-spoke rules where the policy allows |
+| 14 | Scaleway publishes **no per-VPC route quota** | Unknown ceiling | Routes scale 1:1 with spokes (~19/hub); confirm with Support alongside the item #2 quota request |
+| 15 | Transitive peering limited to **four chained VPCs** | Would block any future spoke↔spoke-via-hub design | Not required today — all flows are single-hop (ADR-004); transitivity is enabled at hub creation anyway because the setting is immutable (ADR-008) |
 
 ## 18. Cost model
 
@@ -653,16 +702,16 @@ Once the NVA is shrunk for non-prod, LB + PGW + IPs (~€45/mo) are a **floor th
 
 | Stamps | Fixed hub bases | + peering (assumed €0.005/h) | ≈ annual |
 |---|---|---|---|
-| 14 (1 prd + 13 non-prod, today) | ~€1,600/mo | +~€2 k/mo | **~€22–43 k/yr** |
-| 50 | ~€5.5 k/mo | + peering | **~€70–90 k/yr** |
-| 297 (99×3 max) | ~€30 k/mo | + peering | **~€360 k+/yr** |
+| **4** — `prd01` + `acc01`/`tst01`/`dev01` (today) | ~€561/mo | +~€290–555/mo (10–19 spokes each) | **~€10–13 k/yr** |
+| 7 — all three reserve blocks built out | ~€861/mo | +~€510/mo (10 spokes each) | **~€16 k/yr** |
+| 16 — every /12 allocated | ~€1.8 k/mo | + peering | **~€27 k/yr** (needs a PN quota increase, risk #2) |
 
 Two consequences the numbers make visible:
 
-- **The dominant driver inverted.** With small stamps, `fixed_hub_base × stamp_count` dominates — not connectors × 250-in-one-env as in earlier drafts. Every non-prod stamp lights another ~€100/mo of always-on NVA+LB+PGW meters.
-- **Peering is the biggest unknown.** At the 250-instance cap that is 500 connectors; at the assumed €0.005/h ≈ €1.8 k/mo, but the true rate is unpublished — confirm it first (open item 1, risk #10).
+- **The dominant driver inverted.** `fixed_hub_base × stamp_count` dominates — not connectors × 250-in-one-env as in earlier drafts. Every non-prod stamp lights another ~€100/mo of always-on NVA+LB+PGW meters, which is why the estate is four stamps and not fourteen.
+- **Peering is still the biggest unknown.** Four stamps at 19 spokes is 152 connectors; at the assumed €0.005/h ≈ €555/mo, but Scaleway documents only that each peered connector is billed at a fixed hourly rate with the cost split between both sides — **the rate itself remains unpublished**. Confirm it first (open item 1, risk #10).
 
-**Cost levers:** a **shared non-prod hub** (§10) collapses ~13 non-prod bases toward 1–2 — the single biggest saving; smaller non-prod instance types; TTL/auto-suspend on ephemeral dev stamps. Workload compute (Kapsule nodes, Managed DB — a DEV Postgres ~€11/mo) sits in the **workload budget** and typically dwarfs the platform base, but is per-workload, not landing-zone. *(Rates sourced Aug 2026 from Scaleway pricing/docs and cached aggregators; verify against the living rate sheet.)*
+**Cost levers:** a **shared non-prod hub** (§10) collapses the three non-prod bases toward one — still the single biggest saving; smaller non-prod instance types; TTL/auto-suspend on ephemeral dev stamps. Workload compute (Kapsule nodes, Managed DB — a DEV Postgres ~€11/mo) sits in the **workload budget** and typically dwarfs the platform base, but is per-workload, not landing-zone. *(Rates sourced Aug 2026 from Scaleway pricing/docs and cached aggregators; verify against the living rate sheet.)*
 
 ## 19. Roadmap
 
@@ -673,9 +722,9 @@ Two consequences the numbers make visible:
 ## 20. Open items
 
 1. **Confirm the €/hour VPC peering connector rate** — the top pricing unknown (§18, risk #10); it may rival the hub bases.
-2. Scaleway quota confirmation, org-wide dimension: number of stamps/VPCs, projects, and public IPs at up to ~99 stamps/class (risk #2).
+2. **Request a Private Network quota increase** from Scaleway Support (default 255/Organization) — the binding estate constraint (risk #2, §6.1). Confirm the per-VPC route quota in the same request (risk #14).
 3. Decide **shared non-prod hub vs. per-stamp hub** for non-prod (§10, §18) — the biggest cost lever.
-4. Confirm **/16-per-stamp vs. /17** addressing if more than 32 prd/stg or 64 dev stamps are ever needed (§6.2).
+4. ~~Confirm /16-per-stamp vs. /17 addressing~~ — **closed by ADR-015**: /12 per stamp gives 1,022 addressable spokes and 16 blocks, so addressing is no longer a limiting dimension (§6.2).
 5. LB → cross-peering backend behaviour PoC (risk #3).
 6. Validate NVA inspected-throughput assumptions per chosen instance type (§8).
 7. Confirm Kapsule pod/service CIDR pinning against `100.64.0.0/10`.
@@ -689,11 +738,11 @@ Two consequences the numbers make visible:
 
 **ADR-002 — Workload teams hold no network rights.** *Accepted (amended by ADR-011/012).* Segregation of duties requires the platform to own VPC/PN/peering/DNS everywhere, enforced by omission of permission sets (no explicit deny exists) plus automated audit. Network resources now live *inside* each `spoke-<name>` repo but are applied by a **platform-controlled** identity (`app-spoke-<name>-network-<env>`) scoped to the spoke project, its paths gated to platform `CODEOWNERS` — so workload teams still hold no network rights. Exception unchanged: `PrivateNetworksReadOnly` where product APIs require attachment from workload Terraform.
 
-**ADR-003 — Deterministic CIDR derivation.** *Accepted; addressing scheme superseded by ADR-013.* The `cidrsubnet()`-from-registry-index determinism (no hand-picked addresses) stands; the original /14-per-environment allocation is replaced by /16-per-numbered-stamp (ADR-013) now that stamps are small and numerous.
+**ADR-003 — Deterministic CIDR derivation.** *Accepted; addressing scheme superseded by ADR-013, then ADR-015.* The `cidrsubnet()`-from-registry-index determinism (no hand-picked addresses) stands; the original /14-per-environment allocation became /16-per-numbered-stamp (ADR-013) and is now /12-per-stamp with an allocated stamp id (ADR-015).
 
 **ADR-004 — All traffic through the hub, strictly spoke↔hub.** *Accepted.* Full inspection of ingress and egress; no spoke↔spoke routes; consequence: transitive peering unnecessary (single-hop flows).
 
-**ADR-005 — Pools instead of singleton hub services.** *Accepted; default now single-shard-per-stamp.* NVA/LB/PGW remain shard maps with deterministic assignment, but because each stamp is small (§6.1) the default is **one shard per pool per stamp**; the pool exists so a hot/growing stamp scales by configuration. The 250-instance total is distributed across many single-shard hubs, so the fixed hub base multiplies across stamps rather than a single pool growing to 5–10 shards (§8, §18).
+**ADR-005 — Pools instead of singleton hub services.** *Accepted; default now single-shard-per-stamp.* NVA/LB/PGW remain shard maps with deterministic assignment, but because each stamp is small (§6.1) the default is **one shard per pool per stamp**; the pool exists so a hot/growing stamp scales by configuration. The estate is distributed across four single-shard hubs, so the fixed hub base multiplies across stamps rather than a single pool growing to 5–10 shards (§8, §18).
 
 **ADR-006 — NVA stack: nftables + Suricata over OPNsense.** *Proposed.* Rationale: fully declarative via cloud-init/Git (OPNsense config is GUI-centric and harder to reconcile with drift detection), higher raw throughput per vCPU, smaller attack surface, no license/GUI exposure. Trade-off accepted: no GUI, HA is manual — mitigated by pool pattern and pipeline recreate. Decision to be ratified after Phase 1 throughput validation.
 
@@ -709,6 +758,16 @@ Two consequences the numbers make visible:
 
 **ADR-012 — Networking lives in the spoke repo; two-sided peering is the duty boundary.** *Accepted.* Scaleway peering requires a connector in **each** VPC and only reaches `Peered` when both exist. The spoke repo (platform-controlled network identity, scoped to the spoke project only) builds the spoke-side connector, PNs, NACL and default route; the platform hub layer builds the hub-side connector, route and ingress rule (`for_each` over the registry). Neither identity needs rights in the other's VPC, and a spoke cannot self-connect — segregation of duties enforced by the platform's own topology rather than by permission bookkeeping. Cost: onboarding is a coordinated two-step (registry PR + spoke apply) and hub-side per-spoke resources touch the shared hub state at lifecycle events only (safe `for_each` additions; shard the hub state per stamp if it ever grows unwieldy).
 
-**ADR-013 — Instance-numbered stamps; 250 as a global spoke-instance budget; /16 per stamp.** *Accepted (supersedes ADR-003 addressing).* Environments are numbered instances `<class><NN>` (two-digit, 01–99 per class). The 250 target is the **estate-wide** count of spoke instances (~20 workloads × their targeted stamps), not 250-per-environment; each stamp is small (≤~20 in practice, ≤60 by addressing). Each stamp gets one /16 with the second octet as the stamp id, making addressing self-identifying and non-overlapping within 10/8; class ranges prd `10.0–10.31`, stg `10.32–10.63`, dev `10.64–10.127`, reserved `10.128+`. Because stamps are independent (ADR-004), overlap is safe if ever needed; a /17-per-stamp or non-prod overlap covers the full 99×3 ceiling. This reframing also relieves the old per-hub quota risks (≤~60 per hub) and inverts the cost driver to fixed-base-×-stamp-count (§18).
+**ADR-013 — Instance-numbered stamps; 250 as a global spoke-instance budget; /16 per stamp.** *Accepted for instance numbering; the /16 addressing and the 250 budget are superseded by ADR-015.* Environments are numbered instances `<class><NN>` (two-digit, 01–99 per class). The 250 target is the **estate-wide** count of spoke instances (~20 workloads × their targeted stamps), not 250-per-environment; each stamp is small (≤~20 in practice, ≤60 by addressing). Each stamp gets one /16 with the second octet as the stamp id, making addressing self-identifying and non-overlapping within 10/8; class ranges prd `10.0–10.31`, stg `10.32–10.63`, dev `10.64–10.127`, reserved `10.128+`. Because stamps are independent (ADR-004), overlap is safe if ever needed; a /17-per-stamp or non-prod overlap covers the full 99×3 ceiling. This reframing also relieves the old per-hub quota risks (≤~60 per hub) and inverts the cost driver to fixed-base-×-stamp-count (§18).
 
 **ADR-014 — Single manual bootstrap seam.** *Accepted.* Full IaC has one unavoidable chicken-and-egg: the Terraform state bucket and the first platform pipeline key must exist before anything can be managed as code. These two artefacts are created **manually once** and documented; everything downstream — projects, all IAM applications and keys, the repo-factory, every spoke repo and credential, and ≤90-day key rotation — is IaC. The manual step is exactly one bucket + one key; per-spoke credentials are never hand-made.
+
+**ADR-015 — Four named stamps; /12 per stamp; hub /21; quota as the real ceiling.** *Accepted (supersedes ADR-013 addressing and the 250 budget).* The estate is **four allocated stamps** — `prd01`, `acc01`, `tst01`, `dev01` — with **three reserve /12 blocks** and nine unallocated. Instance numbering from ADR-013 is **retained** so a second instance (`dev02`) is an allocation from a reserve block rather than an estate-wide rename.
+
+*Addressing.* Each stamp receives one **/12**; `10.0.0.0/8` divides into exactly 16, and the stamp id is the high nibble of the second octet (`S = octet2 >> 4`), so any address still names its stamp in one shift. The hub takes the first **/21** — the tightest prefix that fits the five §6.3 Private Networks (1,280 of 2,048 addresses used) — and spokes are `cidrsubnet("10.${S*16}.0.0/12", 10, w + 2)`, i.e. /22-blocks 2…1023.
+
+*Why /12 and not /16.* A /16 held 60 spokes and, at a /20 hub, could not be stretched past 62 — a ceiling set by arithmetic rather than by anything operational. A /12 holds 1,022, which deliberately removes addressing from the list of constraints so that capacity discussions are about quota and inspection throughput, where the real limits are. The cost is coarser blocks (16 rather than 256), which is ample against an estate of four.
+
+*Stamp ids are allocated, not derived.* ADR-013 computed `S` from `class_base + (NN − 1)`. With 16 blocks and 7 in use, an explicit registry allocation is clearer and lets `prd02` take a low block. Everything below the stamp stays formula-derived — no address is hand-picked (principle #5).
+
+*The 250 budget is replaced.* Published Scaleway quotas (Sept 2026) show the binding constraint is **255 Private Networks per Organization**: 4 per hub, 3 per spoke, giving `Σ over stamps (4 + 3 × spokes) ≤ 255` — about 19 spokes per stamp at four stamps. Peering was never the limit: there is no per-VPC peering cap and the Organization cap is 512 connectors. The CI invariant therefore asserts the PN budget, not a spoke-instance count (§15).
