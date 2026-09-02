@@ -208,10 +208,11 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ## Decisions to resolve while coding (from §20 open items)
 
-1. **€/hour peering connector rate** — confirm before Phase 7 scale-out (§18, risk #10). Highest priority.
+1. ~~€/hour peering connector rate~~ — **closed**: €0.02/h per connector = €29.20/mo per spoke (§18, risk #10). Peering is 64–77% of platform run-rate, so treat each workload's `stamps` list as a cost decision and report peering spend per workload on the dashboard.
 2. **Shared non-prod hub vs per-stamp hub** — decide before Phase 7 (§10). Biggest cost lever.
 3. **Private Network quota increase** — request from Scaleway Support before the estate approaches 255 PNs; it, not addressing, is the ceiling (§6.1, risk #2). Confirm the per-VPC route quota in the same request.
 4. **NVA instance type + inspected throughput** — validate in the Phase 2/3 PoC (§8, ADR-006 ratification).
+5. **PGW and LB shard sizing** — prod defaults are **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps); VPC-GW-S at 100 Mbps would throttle the planned ~950 Mbps stamp egress ~10× (§8, risk #16). Validate against measured throughput before ratifying non-prod VPC-GW-S.
 
 ---
 

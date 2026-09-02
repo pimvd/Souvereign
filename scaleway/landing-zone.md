@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.6 |
-| **Date** | 1 September 2026 |
+| **Status** | Draft v0.7 |
+| **Date** | 2 September 2026 |
 | **Owner** | Pim van Dijk |
 | **Scope** | Network, identity, delivery, and operations architecture for a multi-environment, multi-workload Scaleway estate |
 | **Changes in v0.2** | Architecture diagrams; capacity planning; availability assumptions; observability; security controls; Terraform module layout; validation; ADR appendix; formula-based cost model |
@@ -11,6 +11,7 @@
 | **Changes in v0.4** | New **Exit strategy** chapter (§16): reversible-lock-in principle (ADR-010), exit register, data-export requirement for stateful services, off-provider rebuild rehearsal and a time-to-exit SLO. Provider-neutral; managed LB pool retained unchanged. Subsequent sections renumbered §17–§20 |
 | **Changes in v0.5** | **Delivery model reshaped**: global layer renamed `platform`; **repo + Terraform state per workload** (spoke), networking now lives in the spoke repo under a platform-controlled identity, **two-sided peering as the duty boundary** (§6.6, §14, ADR-011/012). **Environments are instance-numbered stamps** `<class><NN>` and the **250 target is now a global spoke-instance budget**, not per-environment; small stamps → **one /16 per stamp** addressing (§6.1, §6.2, ADR-013). Capacity reworked to single-shard-per-stamp (§8). **Cost model rebuilt with a dated euro snapshot** and the inverted "fixed base × stamp count" driver (§18). Multi-domain DNS made explicit (§11). Single manual bootstrap seam (§14.4, ADR-014). Managed LB retained |
 | **Changes in v0.6** | **Addressing and estate model reshaped again**: the estate is now **four named stamps** (`prd01`, `acc01`, `tst01`, `dev01`) plus **three reserve blocks**, each stamp receiving **one /12** with the hub as the first **/21** and spokes as /22 from block 2 up (§6.1, §6.2, §6.3, ADR-015, supersedes ADR-013 addressing). Instance numbering is **retained** so a second instance is an allocation, not a redesign. **Scaleway quotas confirmed against published documentation** and the speculative "~50 spokes" threshold retired: there is **no per-VPC peering cap**; the binding limit is the **Organization-wide 255 Private Network quota**, which caps the estate at ~19 spokes/stamp across four stamps (§6.6, §8, §17, §20). The 250 global spoke-instance budget is replaced by that PN budget as the CI invariant (§14.2, §15). Cost projection rebased on 4 and 7 stamps (§18) |
+| **Changes in v0.7** | **Cost model rebuilt on published rates (Scaleway Network Pricing, Sept 2026)** — the peering connector rate is confirmed at **€0.02/h** (risk #10 and open item 1 closed), **4× the €0.005 previously assumed**. Consequence: **peering now dominates platform cost** (64–77% of the estate run-rate) and the driver inverts back from stamp count to **spoke count**; the shared-non-prod-hub lever no longer touches the largest line (§18). Rate sheet, costed stamp and estate projection all restated. **Bandwidth mismatch surfaced** between the §8 capacity model and the default shard sizes — VPC-GW-S is 100 Mbps against ~950 Mbps of planned egress, LB-S is 200 Mbps — so prod defaults move to **VPC-GW-M / LB-GP-M** and a new risk (#16) tracks validation. DNS zones costed for the first time (§11, §18) |
 
 ---
 
@@ -370,9 +371,9 @@ sum(egress_budget_mbps of assigned spokes) <= shard_inspected_capacity_mbps × 0
 
 and equivalents for the session/CPS/PPS dimensions. With a shard validated at 2,000 Mbps inspected and 70% usable: `floor(2000 × 0.70 / 50) = 28` spokes at the default budget. Because each stamp hosts only ≤~19 spokes (§6.1), **a single NVA shard covers a whole stamp** at the default budget; the pool scales out only for an unusually hot stamp, and measured utilization drives that decision (§12). The estate is distributed across four single-shard hubs, so the "one big pool of 5–10 shards" picture does not apply — instead the fixed hub base is multiplied across stamps, which is the dominant cost (§18).
 
-**LB shard.** Bounded by frontends/certificates per LB and connections/throughput per LB type. A single LB shard covers a small stamp; default `spokes_per_lb = 50` *(validate against LB type limits)*. Multi-domain workloads (§11) consume extra per-frontend certificates, which counts against the LB cert limit — so effective `spokes_per_lb` drops for cert-heavy stamps.
+**LB shard.** Bounded by frontends/certificates per LB and connections/throughput per LB type. Published bandwidth per type is **LB-S 200 Mbps, LB-GP-M 500 Mbps, LB-GP-L 1 Gbps, LB-GP-XL 4 Gbps** (Sept 2026). The nominal `spokes_per_lb = 50` is a *frontend/certificate* bound, not a throughput one: at ~19 spokes an LB-S offers ~10 Mbps of ingress per spoke, so **LB-GP-M is the prod default** and LB-S is retained only for non-prod stamps with light ingress *(validate per stamp against measured ingress, risk #16)*. Multi-domain workloads (§11) consume extra per-frontend certificates, which counts against the LB cert limit — so effective `spokes_per_lb` drops for cert-heavy stamps.
 
-**PGW shard.** Bounded by NAT throughput and session table. One PGW per stamp is the default; scale to one PGW per 2–3 NVA shards only where a stamp is scaled out *(validate)*.
+**PGW shard.** Bounded by NAT throughput and session table. Published bandwidth is **VPC-GW-S 100 Mbps, VPC-GW-M 1 Gbps, VPC-GW-L 3 Gbps, VPC-GW-XL 10 Gbps** (Sept 2026). This is a hard constraint on the egress path: at ~19 spokes on the default 50 Mbps budget the stamp plans for ~950 Mbps of aggregate egress, which a VPC-GW-S (100 Mbps) would throttle by an order of magnitude well before the NVA's ~2,000 Mbps inspected capacity binds. **VPC-GW-M is therefore the prod default**; VPC-GW-S is acceptable only for non-prod stamps whose summed egress budget stays under ~70 Mbps. One PGW per stamp remains the default count; scale to one PGW per 2–3 NVA shards only where a stamp is scaled out *(validate — risk #16)*.
 
 **Hub control plane.** Per stamp the hub carries one route, one ingress rule, and one connector per spoke — ~19 of each at the quota-bounded stamp size (§6.1). Against published Scaleway quotas (512 peering connectors per Organization, 255 NACL rules per VPC per address family, no per-VPC peering or route cap) this is not close to binding. The constraint that *does* bind the estate is the **255 Private Network per Organization** quota (§6.1, §17); VPCs (256/Org) and public IPs are the next dimensions to watch.
 
@@ -411,7 +412,7 @@ Future path to region resilience (not committed): second-region stamps on the re
 
 ## 11. DNS and domains
 
-Public zones are owned by the platform in `plt-connectivity-<env>` (or a shared DNS project where zones span stamps). The estate can host **multiple apex domains** — e.g. `example.com` and `example.nl` — each apex being its own platform-owned public zone; the managed set is declared explicitly as `dns_zones` in the registry (§14.2), and the platform pipeline holds `DomainsDNSFullAccess` across all of them. Workloads receive names under any managed apex (`<workload>.<env>.example.com`, a vanity host, or several domains at once) via records requested by PR. Each published hostname is a landing-zone-owned LB frontend with its own certificate (Let's Encrypt via LB, or imported); publishing on multiple domains therefore consumes more per-frontend certificates, which counts against LB cert limits (§8). Private resolution is strictly spoke↔hub: spokes resolve hub-published service names via Scaleway's built-in private DNS per Private Network; no cross-spoke discovery exists by design.
+Public zones are owned by the platform in `plt-connectivity-<env>` (or a shared DNS project where zones span stamps). The estate can host **multiple apex domains** — e.g. `example.com` and `example.nl` — each apex being its own platform-owned public zone; the managed set is declared explicitly as `dns_zones` in the registry (§14.2), and the platform pipeline holds `DomainsDNSFullAccess` across all of them. Workloads receive names under any managed apex (`<workload>.<env>.example.com`, a vanity host, or several domains at once) via records requested by PR. Each published hostname is a landing-zone-owned LB frontend with its own certificate (Let's Encrypt via LB, or imported); publishing on multiple domains therefore consumes more per-frontend certificates, which counts against LB cert limits (§8). Each public zone is billed per zone (€0.007/h ≈ €5.11/mo, 5 M requests included, then €0.0005/million), so the managed apex set is a small standing estate-level cost rather than a per-stamp one — two apexes ≈ €10/mo (§18). Private resolution is strictly spoke↔hub: spokes resolve hub-published service names via Scaleway's built-in private DNS per Private Network; no cross-spoke discovery exists by design.
 
 ## 12. Observability and logging
 
@@ -651,67 +652,75 @@ Because exit capability degrades silently, adoption of new dependencies is gated
 | 7 | No OIDC federation for GitHub | Long-lived keys | Automated ≤90-day rotation, least-privilege per repo |
 | 8 | Immutable IPv6 /64 per PN | Unfiltered v6 path if ignored | ADR-007: parallel v6 filtering, validated in §15.3 |
 | 9 | Region loss = environment loss | Availability | Accepted (§10); quarterly rebuild exercise; region resilience on roadmap |
-| 10 | VPC peering connector €/hour rate **not publicly documented** | Unknown standing cost, possibly ≈ hub bases | **Top pricing question** — confirm €/connector before scale-out (§18, open items) |
+| 10 | VPC peering connector rate | **Closed** — published at **€0.02/h per connector** (~€14.60/mo), i.e. **€29.20/mo per spoke** for the two-sided connection. 4× the previously assumed €0.005/h | Confirmed against Scaleway Network Pricing (Sept 2026). It does not merely rival the hub bases — it **exceeds them**: peering is 64–77% of platform run-rate (§18). Spoke count is now the primary cost lever |
 | 11 | Exit capability asserted but unproven until first off-provider rebuild | Strategic / lock-in | §16: exit register + annual off-provider rebuild, validation suite as acceptance gate |
 | 12 | Fixed hub base × stamp count is the dominant cost, multiplied across stamps | Standing cost | Shared non-prod hub + TTL/auto-suspend; smaller non-prod instance types (§10, §18) |
 | 13 | Network ACL rules capped at **255 IPv4 + 255 IPv6 per VPC**; NACLs are stateless so every flow is declared twice | Hub filtering ceiling | Comfortable at ~19 spokes; re-check before any stamp grows, and prefer summarised spoke ranges over per-spoke rules where the policy allows |
 | 14 | Scaleway publishes **no per-VPC route quota** | Unknown ceiling | Routes scale 1:1 with spokes (~19/hub); confirm with Support alongside the item #2 quota request |
 | 15 | Transitive peering limited to **four chained VPCs** | Would block any future spoke↔spoke-via-hub design | Not required today — all flows are single-hop (ADR-004); transitivity is enabled at hub creation anyway because the setting is immutable (ADR-008) |
+| 16 | Default shard sizes undersized against the §8 capacity model: **VPC-GW-S is 100 Mbps** vs ~950 Mbps planned stamp egress; **LB-S is 200 Mbps** | Egress throttled ~10× before the NVA binds; ingress ceiling on prod | Prod defaults moved to **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps) in §8, at +€50/mo and +€23/mo per prod stamp. Validate measured egress/ingress in the Phase 1 PoC before ratifying the non-prod VPC-GW-S choice |
 
 ## 18. Cost model
 
-Costs are maintained as a **formula plus a living rate sheet** (separate spreadsheet, reviewed quarterly). The euro figures below are a **dated snapshot (Aug 2026, ex-VAT)** for orientation only; the living rate sheet stays authoritative (ADR-009).
+Costs are maintained as a **formula plus a living rate sheet** (separate spreadsheet, reviewed quarterly). The euro figures below are a **dated snapshot (Sept 2026, ex-VAT, 730 h/month)** for orientation only; the living rate sheet stays authoritative (ADR-009).
 
-**Cost shape.** Each numbered stamp carries a fixed, always-on hub base plus a small per-spoke variable; the estate cost is the sum over stamps — so the fixed base **multiplies by stamp count**:
+**Cost shape.** Each stamp carries a fixed, always-on hub base plus a per-spoke variable dominated by peering; the estate cost is the sum over stamps, plus estate-level DNS:
 
 ```
 stamp_cost  = nva_shard(instance_rate)                        # ~1 shard/stamp (§8)
             + lb_shard(lb_rate) + pgw_shard(pgw_rate)
             + public_ips + cockpit_floor + object_storage_floor   # fixed base
-            + spokes × 2 × connector_hourly_rate                  # per-spoke
+            + spokes × 2 × connector_hourly_rate                  # per-spoke, DOMINANT
             + spokes × marginal(certs, logs)
-estate_cost = Σ over stamps ( stamp_cost )
+estate_cost = Σ over stamps ( stamp_cost ) + dns_zones × zone_rate
 ```
 
-**Snapshot rate sheet (Aug 2026, ex-VAT, ~730 h/month):**
+**Snapshot rate sheet (Sept 2026, ex-VAT, 730 h/month):**
 
 | Resource | Rate | ≈ €/mo | Confidence |
 |---|---|---|---|
-| NVA — POP2-8C-32G (prod) | €0.29/h | 208.80 | confirmed |
-| NVA — POP2-2C-8G (non-prod) | ~€0.0725/h | ~52.90 | estimated (linear POP2) |
-| Load Balancer LB-S | — | 19.02 | confirmed |
-| Public Gateway VPC-GW-S | from €0.0199/h | ~14.53 | confirmed ("from") |
-| Flexible IPv4 (each) | €0.005/h | ~3.65 | confirmed (rose Jun 2026) |
-| VPC + Private Networks | free | 0 | confirmed |
-| VPC peering connector | hourly, split both sides | **unpublished** | **confirm — #1 pricing question (risk #10)** |
+| **VPC peering connector** | **€0.02/h** | **14.60** | **confirmed — published rate** |
+| NVA — POP2-8C-32G (prod) | €0.29/h | 211.70 | confirmed |
+| NVA — POP2-2C-8G (non-prod) | ~€0.0725/h | ~52.92 | estimated (linear POP2) |
+| Load Balancer LB-S (200 Mbps) | €0.023/h | 16.79 | confirmed |
+| Load Balancer LB-GP-M (500 Mbps) | €0.054/h | 39.42 | confirmed |
+| Public Gateway VPC-GW-S (100 Mbps) | €0.026/h | 18.98 | confirmed |
+| Public Gateway VPC-GW-M (1 Gbps) | €0.095/h | 69.35 | confirmed |
+| Flexible IPv4 (each) | €0.005/h | 3.65 | confirmed |
+| DNS public zone (each) | €0.007/h | 5.11 | confirmed (5 M requests included, then €0.0005/M) |
+| VPC + Private Networks | free | 0 | confirmed (only Elastic Metal PN bandwidth tiers are charged) |
 | Cockpit + Object Storage floor | usage-based | ~5–10 | estimated |
+
+**The peering rate is the headline.** At €0.02/h each connector costs ~€14.60/mo, and every spoke needs **two** (§6.6) — so **each spoke costs €29.20/mo in peering alone**, before any workload resource exists. That is 4× the €0.005/h earlier drafts assumed, and it changes which lever matters.
 
 **Costed stamp (fixed base):**
 
 | Item | Prod stamp | Non-prod stamp |
 |---|---|---|
-| NVA (+ block storage) | ~213 | ~53 |
-| LB-S + IPv4 | 22.6 | 22.6 |
-| Public Gateway + IPv4 | 18.2 | 18.2 |
+| NVA (+ block storage) | ~215.70 | ~56.92 |
+| Load Balancer + IPv4 | 43.07 (LB-GP-M, §8) | 20.44 (LB-S) |
+| Public Gateway + IPv4 | 73.00 (VPC-GW-M, §8) | 22.63 (VPC-GW-S) |
 | Cockpit / Object Storage floor | ~8 | ~5 |
-| **Fixed base / stamp** | **~€261/mo** | **~€100/mo** |
+| **Fixed base / stamp** | **~€340/mo** | **~€105/mo** |
 
-Once the NVA is shrunk for non-prod, LB + PGW + IPs (~€45/mo) are a **floor that does not shrink** — a non-prod stamp cannot go much below ~€100/mo while keeping the full topology.
+Sizing the prod shards to the §8 capacity model (risk #16) costs ~€73/mo more than the LB-S/VPC-GW-S pairing — a rounding error next to peering, and the reason it is not worth under-sizing them. Once the NVA is shrunk for non-prod, LB + PGW + IPs (~€43/mo) are a **floor that does not shrink**: a non-prod stamp cannot go much below ~€105/mo while keeping the full topology.
 
-**Estate projection (platform only — excludes workload compute):**
+**Estate projection (platform only — excludes workload compute; prod shards sized per §8):**
 
-| Stamps | Fixed hub bases | + peering (assumed €0.005/h) | ≈ annual |
-|---|---|---|---|
-| **4** — `prd01` + `acc01`/`tst01`/`dev01` (today) | ~€561/mo | +~€290–555/mo (10–19 spokes each) | **~€10–13 k/yr** |
-| 7 — all three reserve blocks built out | ~€861/mo | +~€510/mo (10 spokes each) | **~€16 k/yr** |
-| 16 — every /12 allocated | ~€1.8 k/mo | + peering | **~€27 k/yr** (needs a PN quota increase, risk #2) |
+| Estate | Fixed bases | + peering @ €0.02/h | + DNS (2 zones) | ≈ /mo | ≈ annual | peering share |
+|---|---|---|---|---|---|---|
+| **4 stamps × 10 spokes** (today) | €655 | €1,168 | €10 | **~€1,833** | **~€22 k/yr** | 64% |
+| 4 stamps × 19 spokes (PN cap, §6.1) | €655 | €2,219 | €10 | ~€2,884 | ~€35 k/yr | 77% |
+| 7 stamps × 10 spokes | €970 | €2,044 | €10 | ~€3,024 | ~€36 k/yr | 68% |
+| 16 stamps × 3 spokes | €1,915 | €1,402 | €10 | ~€3,327 | ~€40 k/yr | 42% |
 
-Two consequences the numbers make visible:
+Three consequences the real rates make visible:
 
-- **The dominant driver inverted.** `fixed_hub_base × stamp_count` dominates — not connectors × 250-in-one-env as in earlier drafts. Every non-prod stamp lights another ~€100/mo of always-on NVA+LB+PGW meters, which is why the estate is four stamps and not fourteen.
-- **Peering is still the biggest unknown.** Four stamps at 19 spokes is 152 connectors; at the assumed €0.005/h ≈ €555/mo, but Scaleway documents only that each peered connector is billed at a fixed hourly rate with the cost split between both sides — **the rate itself remains unpublished**. Confirm it first (open item 1, risk #10).
+- **The dominant driver inverted back — to spoke count.** Earlier drafts concluded that `fixed_hub_base × stamp_count` dominates. At the published connector rate it does not: peering is **64–77%** of platform run-rate at any realistic estate size. The cost question is no longer "how many stamps?" but **"how many spokes, across how many stamps?"** — a workload targeted at all four stamps costs €116.80/mo in peering before it runs anything.
+- **The shared non-prod hub is no longer the biggest lever.** It collapses three non-prod bases into one (~€210/mo) but leaves every spoke's two connectors intact, so it now saves ~11% of a four-stamp estate rather than the third it appeared to save. It remains worth doing; it is no longer the headline.
+- **Narrowing a workload's stamp targeting is the headline.** Dropping one workload from all four stamps to two saves €58.40/mo — more than the entire non-prod LB+PGW floor. `stamps = [...]` in the registry (§14.2) is now a cost decision, and the platform dashboard (§12) should report peering spend per workload so that targeting is reviewed, not defaulted.
 
-**Cost levers:** a **shared non-prod hub** (§10) collapses the three non-prod bases toward one — still the single biggest saving; smaller non-prod instance types; TTL/auto-suspend on ephemeral dev stamps. Workload compute (Kapsule nodes, Managed DB — a DEV Postgres ~€11/mo) sits in the **workload budget** and typically dwarfs the platform base, but is per-workload, not landing-zone. *(Rates sourced Aug 2026 from Scaleway pricing/docs and cached aggregators; verify against the living rate sheet.)*
+**Cost levers, re-ranked:** (1) **fewer spoke instances** — review each workload's `stamps` list; (2) **shared non-prod hub** (§10); (3) smaller non-prod instance types; (4) TTL/auto-suspend on ephemeral dev stamps. Workload compute (Kapsule nodes, Managed DB — a DEV Postgres ~€11/mo) sits in the **workload budget** and typically dwarfs the platform base, but is per-workload, not landing-zone. *(Rates sourced 2 Sept 2026 from Scaleway Network Pricing, PAR-1, ex-VAT; verify against the living rate sheet.)*
 
 ## 19. Roadmap
 
@@ -721,12 +730,12 @@ Two consequences the numbers make visible:
 
 ## 20. Open items
 
-1. **Confirm the €/hour VPC peering connector rate** — the top pricing unknown (§18, risk #10); it may rival the hub bases.
+1. ~~Confirm the €/hour VPC peering connector rate~~ — **closed**: €0.02/h per connector, €29.20/mo per spoke (Sept 2026, risk #10). It exceeds the hub bases; peering is 64–77% of platform run-rate, so **peering spend per workload belongs on the platform dashboard** (§12) and each workload's `stamps` targeting is now a reviewed cost decision (§18).
 2. **Request a Private Network quota increase** from Scaleway Support (default 255/Organization) — the binding estate constraint (risk #2, §6.1). Confirm the per-VPC route quota in the same request (risk #14).
-3. Decide **shared non-prod hub vs. per-stamp hub** for non-prod (§10, §18) — the biggest cost lever.
+3. Decide **shared non-prod hub vs. per-stamp hub** for non-prod (§10, §18) — worth ~€210/mo, but no longer the biggest lever now that peering dominates (§18).
 4. ~~Confirm /16-per-stamp vs. /17 addressing~~ — **closed by ADR-015**: /12 per stamp gives 1,022 addressable spokes and 16 blocks, so addressing is no longer a limiting dimension (§6.2).
 5. LB → cross-peering backend behaviour PoC (risk #3).
-6. Validate NVA inspected-throughput assumptions per chosen instance type (§8).
+6. Validate NVA inspected-throughput assumptions per chosen instance type, **and the PGW/LB shard sizing against measured egress and ingress** (§8, risk #16) — ratify VPC-GW-M / LB-GP-M for prod and confirm VPC-GW-S suffices for non-prod.
 7. Confirm Kapsule pod/service CIDR pinning against `100.64.0.0/10`.
 8. Bastion access-review cadence and immutable log destination sizing.
 
