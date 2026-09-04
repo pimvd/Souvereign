@@ -4,7 +4,7 @@ Landing zone and platform architecture for European sovereign cloud providers. E
 
 | Provider | Document | Status |
 |---|---|---|
-| Scaleway | [Landing zone design](scaleway/landing-zone.md) | Draft v0.5 |
+| Scaleway | [Landing zone design](scaleway/README.md) | Draft v0.10 — split across files on the C4 model |
 | Scaleway | [Implementation plan](scaleway/implementation-plan.md) | Companion build guide |
 | STACKIT | [Landing zone design](stackit/landing-zone.md) | Draft v0.1 — outline only |
 
@@ -37,7 +37,16 @@ Questions about these designs, or interested in a landing zone like this for you
 ```
 README.md                       this file — index, contact, certifications
 scaleway/
-  landing-zone.md               hub & spoke design
+  README.md                     index, status, C4 reading guide, section map
+  01-context.md                 C1 - purpose, overview diagrams, principles
+  02-containers.md              C2 - projects, identity, network, traffic flows
+  03-components.md              C3 - resource pools, NVA stack, capacity, DNS
+  04-code.md                    C4 - repos, modules, registry, pipelines, validation
+  operations.md                 availability/DR, observability, security controls
+  cost.md                       rate sheet + four priced scenarios
+  exit-strategy.md              reversible lock-in and the rehearsed exit
+  risks-and-roadmap.md          risk register, roadmap, open items
+  decisions.md                  ADR-001 to ADR-015
   implementation-plan.md        phased build guide for the design
 stackit/
   landing-zone.md               STACKIT counterpart (outline)
