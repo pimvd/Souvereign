@@ -165,7 +165,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ## Phase 7 — Scale & cost controls
 
-**Goal:** keep the fixed-base-×-stamp-count cost (§18) sane.
+**Goal:** keep the estate cost sane — the platform base, the €29.20/mo per-spoke peering baseline, and workload compute (§18).
 
 - [ ] Implement the **shared non-prod hub** flag (§10): `dev*`/`tst*`/`acc*` spokes peering into one shared hub; prod never shared.
 - [ ] Non-prod pool profile: smaller NVA instance type (POP2-2C-8G at the 10 Mbps per-spoke budget — it covers only 2 spokes at 50 Mbps, §8), single-AZ (§18 rate sheet).

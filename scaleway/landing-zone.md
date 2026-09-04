@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.8 |
+| **Status** | Draft v0.9 |
 | **Date** | 4 September 2026 |
 | **Owner** | Pim van Dijk |
 | **Scope** | Network, identity, delivery, and operations architecture for a multi-environment, multi-workload Scaleway estate |
@@ -13,6 +13,7 @@
 | **Changes in v0.6** | **Addressing and estate model reshaped again**: the estate is now **four named stamps** (`prd01`, `acc01`, `tst01`, `dev01`) plus **three reserve blocks**, each stamp receiving **one /12** with the hub as the first **/21** and spokes as /22 from block 2 up (§6.1, §6.2, §6.3, ADR-015, supersedes ADR-013 addressing). Instance numbering is **retained** so a second instance is an allocation, not a redesign. **Scaleway quotas confirmed against published documentation** and the speculative "~50 spokes" threshold retired: there is **no per-VPC peering cap**; the binding limit is the **Organization-wide 255 Private Network quota**, which caps the estate at ~19 spokes/stamp across four stamps (§6.6, §8, §17, §20). The 250 global spoke-instance budget is replaced by that PN budget as the CI invariant (§14.2, §15). Cost projection rebased on 4 and 7 stamps (§18) |
 | **Changes in v0.7** | **Cost model rebuilt on published rates (Scaleway Network Pricing, Sept 2026)** — the peering connector rate is confirmed at **€0.02/h** (risk #10 and open item 1 closed), **4× the €0.005 previously assumed**. Consequence: **peering now dominates platform cost** (64–77% of the estate run-rate) and the driver inverts back from stamp count to **spoke count**; the shared-non-prod-hub lever no longer touches the largest line (§18). Rate sheet, costed stamp and estate projection all restated. **Bandwidth mismatch surfaced** between the §8 capacity model and the default shard sizes — VPC-GW-S is 100 Mbps against ~950 Mbps of planned egress, LB-S is 200 Mbps — so prod defaults move to **VPC-GW-M / LB-GP-M** and a new risk (#16) tracks validation. DNS zones costed for the first time (§11, §18) |
 | **Changes in v0.8** | **NVA sizing corrected against published Instance bandwidth (Scaleway Compute pricing, Sept 2026)**. The §8 worked example was impossible: it assumed 2,000 Mbps inspected on a **POP2-8C-32G whose line rate is 1.6 Gbps**, so by the document's own 30–50%-of-line-rate model the shard yields ~640 Mbps inspected and **~8 spokes, not 28** — "a single NVA shard covers a whole stamp" did not hold. Prod NVA moves to **COMPUTE3-X16C-32G** (4 Gbps, 16 dedicated physical cores, ~22 spokes) and `default_spoke_budget_mbps` becomes **per stamp class** (50 prod / 10 non-prod), since a POP2-2C-8G covers only 2 spokes at 50 Mbps (§7.1, §8, risk #17). POP2-2C-8G rate confirmed at €0.0735/h, replacing the estimate. Cost model restated: prod fixed base €340 → €470/mo (§18) |
+| **Changes in v0.9** | **§18 restructured into four priced scenarios** — the landing zone itself, an empty workload, a workload with Kubernetes, and a workload with two 32 GB VMs — each costed *per workload instance* so the estate is an addition rather than a blended formula (§18.1–§18.7). Adds a worked estate example (~€5.6 k/mo for 4 stamps + 10 workloads) and separates the two cost questions that were previously conflated: **peering is 59–74% of the platform bill, compute ~65% of the whole bill** (§18.8). Kapsule's mutualized control plane confirmed **free**; instance and DNS rates folded into a single rate sheet (§18.2). **Block Storage is the one unsourced input** and is flagged as such (open item 9) |
 
 ---
 
@@ -443,7 +444,7 @@ All telemetry converges in `plt-management-<env>` (Cockpit), with prod audit dat
 
 **Alerting.** Platform alert set: NVA/PGW/LB shard health, drift detection findings, IAM audit diffs, certificate expiry, peering/route validation failures, capacity thresholds (≥70% of any shard budget), and budget anomalies. Routed to the platform team's on-call channel.
 
-**Dashboards.** One platform dashboard per stamp (rolled up across the estate): shard utilization vs. capacity model (§8), spoke count vs. quota headroom, per-stamp and total fixed-base cost run-rate (§18), top egress destinations, denied-flow trends.
+**Dashboards.** One platform dashboard per stamp (rolled up across the estate): shard utilization vs. capacity model (§8), spoke count vs. quota headroom, per-stamp and total fixed-base cost run-rate, **peering spend per workload** and **compute spend per stamp** (§18.8), top egress destinations, denied-flow trends.
 
 ## 13. Security controls
 
@@ -682,64 +683,142 @@ Because exit capability degrades silently, adoption of new dependencies is gated
 
 Costs are maintained as a **formula plus a living rate sheet** (separate spreadsheet, reviewed quarterly). The euro figures below are a **dated snapshot (Sept 2026, ex-VAT, 730 h/month)** for orientation only; the living rate sheet stays authoritative (ADR-009).
 
-**Cost shape.** Each stamp carries a fixed, always-on hub base plus a per-spoke variable dominated by peering; the estate cost is the sum over stamps, plus estate-level DNS:
+### 18.1 How to read this chapter
+
+The estate's cost is built from **four priced scenarios**, each costed once and then multiplied:
 
 ```
-stamp_cost  = nva_shard(instance_rate)                        # ~1 shard/stamp (§8)
-            + lb_shard(lb_rate) + pgw_shard(pgw_rate)
-            + public_ips + cockpit_floor + object_storage_floor   # fixed base
-            + spokes × 2 × connector_hourly_rate                  # per-spoke, DOMINANT
-            + spokes × marginal(certs, logs)
-estate_cost = Σ over stamps ( stamp_cost ) + dns_zones × zone_rate
+estate_cost = landing_zone (§18.3)                    # once, whole estate
+            + Σ over workload instances ( scenario cost )   # §18.4 / §18.5 / §18.6
 ```
 
-**Snapshot rate sheet (Sept 2026, ex-VAT, 730 h/month):**
+A **workload instance** is one workload deployed into one stamp (§6.1), so a workload targeting all four stamps costs four times its scenario price. Every scenario below is quoted **per instance, per month**, and *includes* the €29.20 peering baseline from §18.4 — that baseline is what a spoke costs before it runs anything, so it is never double-counted, only inherited.
 
-| Resource | Rate | ≈ €/mo | Confidence |
+### 18.2 Rate sheet (Sept 2026, ex-VAT, 730 h/month)
+
+| Resource | Rate | ≈ €/mo | Source / confidence |
 |---|---|---|---|
-| **VPC peering connector** | **€0.02/h** | **14.60** | **confirmed — published rate** |
-| NVA — COMPUTE3-X16C-32G (prod, 4 Gbps, 16 dedicated cores) | €0.4682/h | 341.79 | confirmed |
-| NVA — POP2-2C-8G (non-prod, 400 Mbps) | €0.0735/h | 53.65 | confirmed |
-| *(ref)* POP2-8C-32G — old prod default, 1.6 Gbps | €0.29/h | 211.70 | confirmed; undersized, see risk #17 |
-| Load Balancer LB-S (200 Mbps) | €0.023/h | 16.79 | confirmed |
+| **VPC peering connector** | €0.02/h | 14.60 | Network Pricing — confirmed |
+| VPC, Private Networks | free | 0 | Network Pricing — confirmed (only Elastic Metal PN bandwidth tiers are charged) |
+| **Kubernetes control plane (mutualized)** | free | 0 | Kapsule docs — confirmed ("provided without additional costs"); dedicated control planes are hourly with a 30-day commitment, rate not published |
+| NVA — COMPUTE3-X16C-32G (prod, 4 Gbps, 16 dedicated cores) | €0.4682/h | 341.79 | Compute Pricing — confirmed |
+| NVA — POP2-2C-8G (non-prod, 400 Mbps) | €0.0735/h | 53.65 | Compute Pricing — confirmed |
 | Load Balancer LB-GP-M (500 Mbps) | €0.054/h | 39.42 | confirmed |
-| Public Gateway VPC-GW-S (100 Mbps) | €0.026/h | 18.98 | confirmed |
+| Load Balancer LB-S (200 Mbps) | €0.023/h | 16.79 | confirmed |
 | Public Gateway VPC-GW-M (1 Gbps) | €0.095/h | 69.35 | confirmed |
+| Public Gateway VPC-GW-S (100 Mbps) | €0.026/h | 18.98 | confirmed |
 | Flexible IPv4 (each) | €0.005/h | 3.65 | confirmed |
 | DNS public zone (each) | €0.007/h | 5.11 | confirmed (5 M requests included, then €0.0005/M) |
-| VPC + Private Networks | free | 0 | confirmed (only Elastic Metal PN bandwidth tiers are charged) |
+| Instance — BASIC3-X4C-16G (4 vCPU / 16 GB, 700 Mbps) | €0.11845/h | 86.47 | confirmed — default Kapsule node |
+| Instance — BASIC3-X8C-32G (8 vCPU / 32 GB, 1.5 Gbps) | €0.2368/h | 172.86 | confirmed — default general-purpose VM |
+| **Block Storage** | **€0.08/GB/mo** | — | **ASSUMED — not sourced. The one unconfirmed input (open item 9)** |
 | Cockpit + Object Storage floor | usage-based | ~5–10 | estimated |
 
-**The peering rate is the headline.** At €0.02/h each connector costs ~€14.60/mo, and every spoke needs **two** (§6.6) — so **each spoke costs €29.20/mo in peering alone**, before any workload resource exists. That is 4× the €0.005/h earlier drafts assumed, and it changes which lever matters.
+> **On the block-storage assumption.** It is used for system volumes only — 50 GB per NVA, per Kapsule node and 100 GB per VM. It contributes €4–16/mo to any scenario below, so even a 100% error moves no total by more than ~€16/mo and changes no conclusion. Replace it from the Block Storage pricing page when confirming the rate sheet.
 
-**Costed stamp (fixed base):**
+### 18.3 Scenario A — the landing zone (no workloads)
+
+What the platform costs before a single workload exists. Shard sizes are the §8 capacity-model defaults (risks #16–#17).
 
 | Item | Prod stamp | Non-prod stamp |
 |---|---|---|
-| NVA (+ block storage) | ~345.79 (COMPUTE3-X16C-32G, §8) | ~57.65 (POP2-2C-8G) |
-| Load Balancer + IPv4 | 43.07 (LB-GP-M, §8) | 20.44 (LB-S) |
-| Public Gateway + IPv4 | 73.00 (VPC-GW-M, §8) | 22.63 (VPC-GW-S) |
+| NVA instance | 341.79 (COMPUTE3-X16C-32G) | 53.65 (POP2-2C-8G) |
+| NVA system volume (50 GB) | 4.00 | 4.00 |
+| Load Balancer + IPv4 | 43.07 (LB-GP-M) | 20.44 (LB-S) |
+| Public Gateway + IPv4 | 73.00 (VPC-GW-M) | 22.63 (VPC-GW-S) |
+| Hub VPC + 4 Private Networks | 0 | 0 |
 | Cockpit / Object Storage floor | ~8 | ~5 |
-| **Fixed base / stamp** | **~€470/mo** | **~€106/mo** |
+| **Per stamp** | **~€470/mo** | **~€106/mo** |
 
-Sizing the prod stamp to the §8 capacity model costs ~€203/mo more than the undersized v0.7 pairing — ~€130 for the NVA (risk #17) and ~€73 for the PGW and LB (risk #16). Against €1,168/mo of peering on a four-stamp estate that is worth paying rather than shipping a hub that throttles at an eighth of its planned egress. Once the NVA is shrunk for non-prod, LB + PGW + IPs (~€43/mo) are a **floor that does not shrink**: a non-prod stamp cannot go much below ~€106/mo while keeping the full topology.
+| Landing zone total | €/mo |
+|---|---|
+| `prd01` | 469.86 |
+| `acc01` + `tst01` + `dev01` (3 × non-prod) | 317.17 |
+| DNS — 2 public apex zones (§11) | 10.22 |
+| **Estate platform base** | **~€797/mo — ~€9.6 k/yr** |
 
-**Estate projection (platform only — excludes workload compute; prod shards sized per §8):**
+Once the NVA is shrunk for non-prod, LB + PGW + IPs (~€43/mo) are a **floor that does not shrink**: a non-prod stamp cannot go much below ~€106/mo while keeping the full topology.
 
-| Estate | Fixed bases | + peering @ €0.02/h | + DNS (2 zones) | ≈ /mo | ≈ annual | peering share |
-|---|---|---|---|---|---|---|
-| **4 stamps × 10 spokes** (today) | €787 | €1,168 | €10 | **~€1,965** | **~€24 k/yr** | 59% |
-| 4 stamps × 19 spokes (PN cap, §6.1) | €787 | €2,219 | €10 | ~€3,016 | ~€36 k/yr | 74% |
-| 7 stamps × 10 spokes | €1,104 | €2,044 | €10 | ~€3,158 | ~€38 k/yr | 65% |
-| 16 stamps × 3 spokes | €2,056 | €1,402 | €10 | ~€3,467 | ~€42 k/yr | 40% |
+### 18.4 Scenario B — an empty workload
 
-Three consequences the real rates make visible:
+A registered workload with a spoke VPC and no resources in it. This is the **cost of onboarding**, and it is not zero.
 
-- **The dominant driver inverted back — to spoke count.** Earlier drafts concluded that `fixed_hub_base × stamp_count` dominates. At the published connector rate it does not: peering is **59–74%** of platform run-rate at any realistic estate size. The cost question is no longer "how many stamps?" but **"how many spokes, across how many stamps?"** — a workload targeted at all four stamps costs €116.80/mo in peering before it runs anything.
-- **The shared non-prod hub is no longer the biggest lever.** It collapses three non-prod bases into one (~€212/mo) but leaves every spoke's two connectors intact, so it now saves ~11% of a four-stamp estate rather than the third it appeared to save. It remains worth doing; it is no longer the headline.
-- **Narrowing a workload's stamp targeting is the headline.** Dropping one workload from all four stamps to two saves €58.40/mo — more than the entire non-prod LB+PGW floor. `stamps = [...]` in the registry (§14.2) is now a cost decision, and the platform dashboard (§12) should report peering spend per workload so that targeting is reviewed, not defaulted.
+| Item | Qty | €/mo |
+|---|---|---|
+| VPC peering connectors (spoke side + hub side, §6.6) | 2 | **29.20** |
+| Spoke VPC | 1 | 0 |
+| Private Networks — `pn-nodes`, `pn-app`, `pn-data` (§6.4) | 3 | 0 |
+| Hub route + ingress rule + LB frontend + Let's Encrypt cert | 1 each | 0 |
+| DNS records under an existing apex | — | 0 (within the zone's included requests) |
+| Terraform state object, log volume | — | negligible |
+| **Per instance** | | **€29.20/mo** |
+| **Targeted at all four stamps** | ×4 | **€116.80/mo — €1,402/yr** |
 
-**Cost levers, re-ranked:** (1) **fewer spoke instances** — review each workload's `stamps` list; (2) **shared non-prod hub** (§10); (3) smaller non-prod instance types; (4) TTL/auto-suspend on ephemeral dev stamps. Workload compute (Kapsule nodes, Managed DB — a DEV Postgres ~€11/mo) sits in the **workload budget** and typically dwarfs the platform base, but is per-workload, not landing-zone. *(Rates sourced Sept 2026 from Scaleway Network Pricing, PAR-1, and Compute Instance pricing, AMS-1, ex-VAT; verify against the living rate sheet. Instance line rates in §8 come from the same Compute page.)*
+Everything except peering is free at this scale. **An empty workload across the estate costs ~€1.4 k/yr before it runs a line of code**, which is why `stamps = [...]` in the registry (§14.2) is a cost decision and not a formality.
+
+### 18.5 Scenario C — a workload with Kubernetes
+
+One Kapsule cluster per instance, sized as a small production pool: **3 nodes × 4 vCPU / 16 GB**. Nodes sit in `pn-nodes` with no public IPs — egress leaves via the hub NVA and PGW (§9), so the spoke adds no gateway or IP cost. Ingress terminates on the **hub** LB (§7.3), so no per-workload Load Balancer is required.
+
+| Item | Qty | €/mo |
+|---|---|---|
+| Kubernetes control plane (mutualized) | 1 | **0** |
+| Node instances — BASIC3-X4C-16G | 3 | 259.41 |
+| Node system volumes (50 GB each) | 150 GB | 12.00 |
+| Peering baseline (§18.4) | — | 29.20 |
+| **Per instance** | | **~€301/mo** |
+| **Targeted at all four stamps** | ×4 | **~€1,202/mo — ~€14.4 k/yr** |
+
+The free control plane means a Kapsule workload costs essentially its node pool. Scaling levers are node count and node size; a dedicated control plane (for regional HA, §10) is priced hourly with a 30-day commitment and is **not** costed here — confirm the rate before selecting it. Non-prod instances of the same workload would normally run a smaller pool, so ×4 is an upper bound.
+
+### 18.6 Scenario D — a workload with 2 VMs
+
+Two general-purpose Instances at 32 GB RAM, the ordinary "lift a server into the landing zone" shape. Same networking assumptions as §18.5 — no public IPs, no per-workload LB.
+
+| Item | Qty | €/mo |
+|---|---|---|
+| Instances — BASIC3-X8C-32G (8 vCPU / 32 GB) | 2 | 345.73 |
+| System volumes (100 GB each) | 200 GB | 16.00 |
+| Peering baseline (§18.4) | — | 29.20 |
+| **Per instance** | | **~€391/mo** |
+| **Targeted at all four stamps** | ×4 | **~€1,564/mo — ~€18.8 k/yr** |
+
+**32 GB alternatives** — the instance line dominates this scenario, so the choice is worth making deliberately:
+
+| Type | vCPU | Bandwidth | €/mo | Note |
+|---|---|---|---|---|
+| BASIC2-A8C-32G | 8 | 800 Mbps | 100.59 | previous generation, cheapest |
+| GP1-S | 8 | 800 Mbps | 139.24 | previous generation |
+| POP2-HM-4C-32G | 4 | 400 Mbps | 150.38 | memory-optimised, fewer cores |
+| PRO2-S | 8 | 1.5 Gbps | 163.07 | |
+| **BASIC3-X8C-32G** | 8 | 1.5 Gbps | **172.86** | **default** |
+| POP2-8C-32G | 8 | 1.6 Gbps | 211.70 | |
+| STANDARD3-X8C-32G | 8 | 2 Gbps | 232.87 | highest bandwidth |
+
+### 18.7 Worked estate example
+
+Four stamps, ten workloads, each targeting all four — 40 spoke instances, within the ~19-per-stamp Private Network ceiling (§6.1):
+
+| Component | Calculation | €/mo |
+|---|---|---|
+| Landing zone (§18.3) | once | 797.25 |
+| 2 Kubernetes workloads (§18.5) | 8 instances × 300.61 | 2,404.84 |
+| 1 two-VM workload (§18.6) | 4 instances × 390.93 | 1,563.71 |
+| 7 light workloads (§18.4 baseline only) | 28 instances × 29.20 | 817.60 |
+| **Total** | | **~€5,583/mo — ~€67 k/yr** |
+
+Share of that total: **landing zone 14%, peering 21%, workload compute 65%.**
+
+### 18.8 What the numbers say
+
+- **Two different questions have two different answers.** Of the *platform* bill — landing zone plus peering, the part the Landing Zone team owns — **peering is 59–74%** (§18.3 vs §18.4). Of the *whole* bill once real workloads land, **compute is ~65%** and the landing zone is ~14%. Neither figure contradicts the other; quote the one that matches the question being asked.
+- **The marginal cost of a workload is peering, then compute.** Onboarding costs €29.20/instance before anything runs (§18.4). That is small against a Kubernetes pool but large against nothing — and it accrues per stamp, so the cheapest saving available is a workload that does not need to exist in all four stamps.
+- **The fixed hub base no longer dominates.** Earlier drafts concluded `fixed_hub_base × stamp_count` was the driver. At the published connector rate it is not: at four stamps the platform base is €797/mo against €1,168/mo of peering for 40 instances.
+- **A shared non-prod hub is a second-order lever now.** It collapses three non-prod bases into one (~€212/mo) but leaves every spoke's two connectors intact — ~11% of the platform base, ~4% of the worked estate.
+
+**Cost levers, re-ranked:** (1) **right-size workload compute** — node pools and instance types dominate the total; (2) **fewer spoke instances** — review each workload's `stamps` list (§14.2), €29.20/mo each; (3) **shared non-prod hub** (§10); (4) smaller non-prod NVA types and the 10 Mbps non-prod budget (§8); (5) TTL/auto-suspend on ephemeral dev stamps. The platform dashboard (§12) should report peering spend per workload and compute spend per stamp so both top levers are visible.
+
+*(Rates sourced Sept 2026 from Scaleway Network Pricing (PAR-1), Compute Instance pricing (AMS-1) and the Kapsule documentation, ex-VAT; Block Storage is assumed pending confirmation — open item 9. Instance line rates used by §8 come from the same Compute page. Verify all against the living rate sheet.)*
 
 ## 19. Roadmap
 
@@ -757,6 +836,8 @@ Three consequences the real rates make visible:
 6. Validate NVA inspected-throughput assumptions per chosen instance type, **and the PGW/LB shard sizing against measured egress and ingress** (§8, risks #16–#17) — ratify COMPUTE3-X16C-32G, VPC-GW-M and LB-GP-M for prod, and confirm POP2-2C-8G + VPC-GW-S suffice for non-prod at the 10 Mbps budget. The 30–50%-of-line-rate IDS factor underpins every shard number and is still unmeasured.
 7. Confirm Kapsule pod/service CIDR pinning against `100.64.0.0/10`.
 8. Bastion access-review cadence and immutable log destination sizing.
+9. **Confirm the Block Storage €/GB/month rate** — the only unsourced input in the §18 rate sheet (assumed €0.08/GB/mo for system volumes). It moves no total by more than ~€16/mo, so it is a tidiness item, not a blocker.
+10. Confirm the **dedicated Kapsule control-plane** rates if regional HA (§10) is ever selected — hourly with a 30-day commitment, not published (§18.5).
 
 ---
 
