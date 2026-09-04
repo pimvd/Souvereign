@@ -96,7 +96,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 **Goal:** a working hub for a single numbered stamp with one shard per pool.
 
 - [ ] `modules/hub/`: hub VPC `10.B.0.0/21`, the four hub PNs (§6.3), baseline routing/NACL.
-- [ ] `modules/pool-nva/`: one NVA shard (POP2 instance) with nftables+Suricata cloud-init + code-reviewed egress allowlist (§7.2, ADR-006).
+- [ ] `modules/pool-nva/`: one NVA shard (COMPUTE3-X16C-32G for prod, POP2-2C-8G for non-prod — §8) with nftables+Suricata cloud-init + code-reviewed egress allowlist (§7.2, ADR-006).
 - [ ] `modules/pool-lb/`: one LB-S shard, frontends/certs plumbing (§7.3).
 - [ ] `modules/pool-pgw/`: one PGW shard, NAT + bastion access list (§7.4).
 - [ ] `modules/hub-peering/`: hub-**side** connector + route + ingress rule for one spoke, driven by `for_each` over registry (§6.6) — empty until Phase 3.
@@ -168,7 +168,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 **Goal:** keep the fixed-base-×-stamp-count cost (§18) sane.
 
 - [ ] Implement the **shared non-prod hub** flag (§10): `dev*`/`tst*`/`acc*` spokes peering into one shared hub; prod never shared.
-- [ ] Non-prod pool profile: smaller NVA instance type (POP2-2C-8G), single-AZ (§18 rate sheet).
+- [ ] Non-prod pool profile: smaller NVA instance type (POP2-2C-8G at the 10 Mbps per-spoke budget — it covers only 2 spokes at 50 Mbps, §8), single-AZ (§18 rate sheet).
 - [ ] TTL/auto-suspend profile for ephemeral dev stamps.
 - [ ] Cost dashboard: per-stamp and total fixed-base run-rate (§12).
 
@@ -208,10 +208,10 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ## Decisions to resolve while coding (from §20 open items)
 
-1. ~~€/hour peering connector rate~~ — **closed**: €0.02/h per connector = €29.20/mo per spoke (§18, risk #10). Peering is 64–77% of platform run-rate, so treat each workload's `stamps` list as a cost decision and report peering spend per workload on the dashboard.
+1. ~~€/hour peering connector rate~~ — **closed**: €0.02/h per connector = €29.20/mo per spoke (§18, risk #10). Peering is 59–74% of platform run-rate, so treat each workload's `stamps` list as a cost decision and report peering spend per workload on the dashboard.
 2. **Shared non-prod hub vs per-stamp hub** — decide before Phase 7 (§10). Biggest cost lever.
 3. **Private Network quota increase** — request from Scaleway Support before the estate approaches 255 PNs; it, not addressing, is the ceiling (§6.1, risk #2). Confirm the per-VPC route quota in the same request.
-4. **NVA instance type + inspected throughput** — validate in the Phase 2/3 PoC (§8, ADR-006 ratification).
+4. **NVA instance type + inspected throughput** — validate in the Phase 2/3 PoC (§8, risk #17, ADR-006 ratification). Prod default is COMPUTE3-X16C-32G (4 Gbps, dedicated cores); the 30–50%-of-line-rate IDS factor underpins every shard number and is still unmeasured.
 5. **PGW and LB shard sizing** — prod defaults are **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps); VPC-GW-S at 100 Mbps would throttle the planned ~950 Mbps stamp egress ~10× (§8, risk #16). Validate against measured throughput before ratifying non-prod VPC-GW-S.
 
 ---
