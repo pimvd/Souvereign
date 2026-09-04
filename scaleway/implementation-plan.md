@@ -24,7 +24,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 - **Work one task at a time.** Each task is small enough to implement, `terraform validate` + `plan`, review the plan, and commit before moving on. Never batch a whole phase into one apply.
 - **Verify after every step.** Run, in order: `terraform fmt -check`, `terraform validate`, `tflint`, `tfsec`/`checkov`, `conftest` (policies), then `plan`. Only apply after a human/agent has read the plan.
-- **Never hand-pick an IP.** All CIDRs come from the formulas in §6.2 (`cidrsubnet("10.S.0.0/16", 6, w + 4)`; stamp id `S = class_base + (NN-1)`). A literal `10.x` address in a resource block is a bug.
+- **Never hand-pick an IP.** All CIDRs come from the formulas in §6.2 (`cidrsubnet("10.${B}.0.0/12", 10, w + 2)`, where `B = S * 16` and stamp id `S` is allocated from the §6.2 block table). A literal `10.x` address in a resource block is a bug.
 - **Pin everything.** Pin the Terraform version, provider versions, and — in spoke repos — the `platform` module release tag. Upgrades are deliberate tag bumps, rolled out per spoke.
 - **Secrets never touch code or state.** Only GitHub environment secrets (§14.3). CI asserts no secret in state.
 - **No Terragrunt.** Each spoke is a single small root per stamp; the DRY mechanism is the versioned module library (§14.1, ADR-011).
@@ -51,9 +51,10 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ## Conventions (implement these first as shared locals)
 
-- **Stamp id:** `class_base = { prd = 0, stg = 32, dev = 64 }`; `S = class_base[class] + (NN - 1)`; stamp prefix `10.S.0.0/16` (§6.2).
-- **Hub:** `10.S.0.0/20`, carved into `pn-hub-transit` / `-egress` / `-ingress` / `-management` (§6.3).
-- **Spoke w (0-based registry index):** `cidrsubnet("10.S.0.0/16", 6, w + 4)` → `10.S.16.0/22` for w=0 (§6.2); PNs `pn-nodes` /23, `pn-app` /24, `pn-data` /24 (§6.4).
+- **Stamp id:** allocated from the §6.2 block table, not derived — `prd01 = 0`, `dev01 = 4`, `tst01 = 5`, `acc01 = 6`; reserves `1`–`3`. Base octet `B = S * 16`; stamp prefix `10.B.0.0/12` (§6.2, ADR-015).
+- **Hub:** `10.B.0.0/21`, carved into `pn-hub-transit` `10.B.0.0/23` / `-egress` `10.B.2.0/24` / `-ingress` `10.B.3.0/24` / `-management` `10.B.4.0/24` (§6.3).
+- **Spoke w (0-based registry index):** `cidrsubnet("10.${B}.0.0/12", 10, w + 2)` → `10.B.8.0/22` for w=0 (§6.2); PNs `pn-nodes` /23, `pn-app` /24, `pn-data` /24 (§6.4).
+- **Private Network budget:** `Σ over stamps (4 + 3 × spokes) ≤ 255` — the Organization-wide Scaleway quota and the estate's real ceiling (§6.1, §17). Assert it in CI before it is ever approached.
 - **Naming:** projects `plt-connectivity-<stamp>`, `plt-management-<stamp>`, `wl-<name>-<stamp>`; repos `platform`, `spoke-<name>` (§4, §14.1).
 - **Kapsule pod/service CIDR:** pinned in `100.64.0.0/10` (§9).
 
@@ -94,7 +95,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 **Goal:** a working hub for a single numbered stamp with one shard per pool.
 
-- [ ] `modules/hub/`: hub VPC `10.S.0.0/20`, the four hub PNs (§6.3), baseline routing/NACL.
+- [ ] `modules/hub/`: hub VPC `10.B.0.0/21`, the four hub PNs (§6.3), baseline routing/NACL.
 - [ ] `modules/pool-nva/`: one NVA shard (POP2 instance) with nftables+Suricata cloud-init + code-reviewed egress allowlist (§7.2, ADR-006).
 - [ ] `modules/pool-lb/`: one LB-S shard, frontends/certs plumbing (§7.3).
 - [ ] `modules/pool-pgw/`: one PGW shard, NAT + bastion access list (§7.4).
@@ -130,7 +131,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 - [ ] **Pre-apply** checks in CI: route invariants, no CIDR overlap (spoke vs hub, **and stamp vs stamp**), IAM diff, registry consistency (unique index, valid `stamps`, Σ instances ≤ 250) (§15).
 - [ ] **Post-apply** canary suite from `pn-hub-management` + per-new-spoke canary: peering, routing, filtering, egress, ingress, DNS (§15 steps 1–6).
 - [ ] Per-module failure class (`rollback-safe` / `manual-recovery-required` / `forward-fix-only`) wired to responses (§15).
-- [ ] Nightly run + promotion gate (stg → prd).
+- [ ] Nightly run + promotion gate (`tst01` → `acc01` → `prd01`).
 
 **Done when:** the suite runs green on `dev01`, and a deliberately broken change (e.g. missing NACL allow) is caught with the correct failure class.
 
@@ -148,16 +149,17 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ---
 
-## Phase 6 — Second stamp + instance numbering — ADR-013
+## Phase 6 — Remaining stamps + instance numbering — ADR-015
 
-**Goal:** prove the stamp abstraction and addressing across numbered instances.
+**Goal:** prove the stamp abstraction and addressing across the full four-stamp estate.
 
-- [ ] Add `stamps/stg01/` and `stamps/prd01/` roots; confirm stamp-id → `/16` derivation (`prd01 = 10.0`, `stg01 = 10.32`, `dev01 = 10.64`).
-- [ ] Target a workload at multiple stamps (`stamps = ["prd01","stg01","dev01"]`); confirm per-stamp state isolation.
-- [ ] CI asserts no two stamps' `/16`s overlap.
-- [ ] Promotion (stg01 → prd01) gated on green post-apply in staging.
+- [ ] Add `stamps/tst01/`, `stamps/acc01/` and `stamps/prd01/` roots; confirm the allocated stamp id → `/12` mapping (`prd01 = 10.0`, `dev01 = 10.64`, `tst01 = 10.80`, `acc01 = 10.96`).
+- [ ] Confirm hub `10.B.0.0/21` and first spoke `10.B.8.0/22` in each stamp.
+- [ ] Target a workload at multiple stamps (`stamps = ["prd01","acc01","tst01","dev01"]`); confirm per-stamp state isolation.
+- [ ] CI asserts unique stamp ids, no two stamps' `/12`s overlap, and the `Σ (4 + 3 × spokes) ≤ 255` Private Network budget.
+- [ ] Promotion (`tst01` → `acc01` → `prd01`) gated on green post-apply in the preceding stamp.
 
-**Done when:** three stamps coexist with deterministic, non-overlapping addressing and independent state.
+**Done when:** four stamps coexist with deterministic, non-overlapping addressing and independent state, and the PN budget invariant is enforced in CI.
 
 ---
 
@@ -165,7 +167,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 **Goal:** keep the fixed-base-×-stamp-count cost (§18) sane.
 
-- [ ] Implement the **shared non-prod hub** flag (§10): several `dev*`/`stg*` spokes peering into one shared hub; prod never shared.
+- [ ] Implement the **shared non-prod hub** flag (§10): `dev*`/`tst*`/`acc*` spokes peering into one shared hub; prod never shared.
 - [ ] Non-prod pool profile: smaller NVA instance type (POP2-2C-8G), single-AZ (§18 rate sheet).
 - [ ] TTL/auto-suspend profile for ephemeral dev stamps.
 - [ ] Cost dashboard: per-stamp and total fixed-base run-rate (§12).
@@ -206,10 +208,11 @@ Questions about this plan, or interested in a landing zone like this for your ow
 
 ## Decisions to resolve while coding (from §20 open items)
 
-1. **€/hour peering connector rate** — confirm before Phase 7 scale-out (§18, risk #10). Highest priority.
+1. ~~€/hour peering connector rate~~ — **closed**: €0.02/h per connector = €29.20/mo per spoke (§18, risk #10). Peering is 64–77% of platform run-rate, so treat each workload's `stamps` list as a cost decision and report peering spend per workload on the dashboard.
 2. **Shared non-prod hub vs per-stamp hub** — decide before Phase 7 (§10). Biggest cost lever.
-3. **/16 vs /17 per stamp** — only if > 32 prd/stg or > 64 dev stamps are needed (§6.2).
+3. **Private Network quota increase** — request from Scaleway Support before the estate approaches 255 PNs; it, not addressing, is the ceiling (§6.1, risk #2). Confirm the per-VPC route quota in the same request.
 4. **NVA instance type + inspected throughput** — validate in the Phase 2/3 PoC (§8, ADR-006 ratification).
+5. **PGW and LB shard sizing** — prod defaults are **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps); VPC-GW-S at 100 Mbps would throttle the planned ~950 Mbps stamp egress ~10× (§8, risk #16). Validate against measured throughput before ratifying non-prod VPC-GW-S.
 
 ---
 
