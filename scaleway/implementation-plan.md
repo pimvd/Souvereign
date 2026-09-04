@@ -36,7 +36,7 @@ Questions about this plan, or interested in a landing zone like this for your ow
 | IaC | Terraform ≥ 1.7, Scaleway provider, GitHub provider |
 | Policy-as-code | OPA/Conftest + tfsec + Checkov (§13) |
 | CI/CD | GitHub Actions (only write path, §14.3) |
-| NVA stack | nftables + Suricata via cloud-init (ADR-006) |
+| NVA stack | nftables + Squid + Suricata + Unbound via cloud-init, generated from the registry (§7.2, ADR-006) |
 | State | Object Storage (S3-compatible) in `plt-management-*`, per stamp / per spoke |
 
 ### Guardrails for the coding agent (paste into the agent's working rules)
@@ -96,7 +96,9 @@ Questions about this plan, or interested in a landing zone like this for your ow
 **Goal:** a working hub for a single numbered stamp with one shard per pool.
 
 - [ ] `modules/hub/`: hub VPC `10.B.0.0/21`, the four hub PNs (§6.3), baseline routing/NACL.
-- [ ] `modules/pool-nva/`: one NVA shard (COMPUTE3-X16C-32G for prod, POP2-2C-8G for non-prod — §8) with nftables+Suricata cloud-init + code-reviewed egress allowlist (§7.2, ADR-006).
+- [ ] `modules/pool-nva/`: one NVA shard (COMPUTE3-X16C-32G for prod, POP2-2C-8G for non-prod — §8) with cloud-init for the full stack — **nftables** (L3/L4 + anti-bypass), **Squid** (explicit CONNECT proxy, per-spoke FQDN × port), **Suricata** (IDS), **Unbound** (tier-2 only) — all generated from the registry (§7.2, ADR-006).
+- [ ] NVA config generator: `registry/workloads.hcl` → `nftables.conf` + `squid.conf` + `suricata.yaml` + `unbound.conf`. No hand-edited appliance config; CI asserts generated output matches the registry.
+- [ ] **Anti-bypass test**: from a spoke canary, direct-to-internet must fail while proxy and DNS ports succeed (§15.4).
 - [ ] `modules/pool-lb/`: one LB-S shard, frontends/certs plumbing (§7.3).
 - [ ] `modules/pool-pgw/`: one PGW shard, NAT + bastion access list (§7.4).
 - [ ] `modules/hub-peering/`: hub-**side** connector + route + ingress rule for one spoke, driven by `for_each` over registry (§6.6) — empty until Phase 3.
@@ -127,6 +129,10 @@ Questions about this plan, or interested in a landing zone like this for your ow
 ## Phase 4 — Validation suite (conformance) — §15
 
 **Goal:** the executable definition of a correct stamp; it is also the exit-conformance gate (§16).
+
+- [ ] **NVA stack PoC (risks #17–#18)**: measure inspected throughput *and* `max_concurrent_proxy_connections` on the chosen shard type; ratify or resize ADR-006.
+- [ ] **Kapsule bootstrap gate (risk #19)**: prove proxy env reaches kubelet and containerd on a real node pool, control-plane and registry endpoints allowlisted, before any workload depends on it.
+- [ ] **No-interception canary**: confirm the destination's own certificate chain is presented end-to-end — no platform CA anywhere in the estate (§15.4b).
 
 - [ ] **Pre-apply** checks in CI: route invariants, no CIDR overlap (spoke vs hub, **and stamp vs stamp**), IAM diff, registry consistency (unique index, valid `stamps`, Σ instances ≤ 250) (§15).
 - [ ] **Post-apply** canary suite from `pn-hub-management` + per-new-spoke canary: peering, routing, filtering, egress, ingress, DNS (§15 steps 1–6).
@@ -212,7 +218,8 @@ Questions about this plan, or interested in a landing zone like this for your ow
 2. **Shared non-prod hub vs per-stamp hub** — decide before Phase 7 (§10). Biggest cost lever.
 3. **Private Network quota increase** — request from Scaleway Support before the estate approaches 255 PNs; it, not addressing, is the ceiling (§6.1, risk #2). Confirm the per-VPC route quota in the same request.
 4. **NVA instance type + inspected throughput** — validate in the Phase 2/3 PoC (§8, risk #17, ADR-006 ratification). Prod default is COMPUTE3-X16C-32G (4 Gbps, dedicated cores); the 30–50%-of-line-rate IDS factor underpins every shard number and is still unmeasured.
-5. **PGW and LB shard sizing** — prod defaults are **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps); VPC-GW-S at 100 Mbps would throttle the planned ~950 Mbps stamp egress ~10× (§8, risk #16). Validate against measured throughput before ratifying non-prod VPC-GW-S.
+5. **Proxy-awareness baseline for base images** — which runtimes get `HTTP(S)_PROXY` injected by the platform vs. workload teams, and what `NO_PROXY` must contain (private ranges, `100.64.0.0/10`, hub names). Determines how much traffic tier 1 covers vs. tier-2 SNI (§7.2, open item 12).
+6. **PGW and LB shard sizing** — prod defaults are **VPC-GW-M** (1 Gbps) and **LB-GP-M** (500 Mbps); VPC-GW-S at 100 Mbps would throttle the planned ~950 Mbps stamp egress ~10× (§8, risk #16). Validate against measured throughput before ratifying non-prod VPC-GW-S.
 
 ---
 
